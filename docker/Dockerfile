@@ -1,7 +1,7 @@
 FROM nvcr.io/nvidia/pytorch:20.11-py3
 
 RUN apt-get update 
-RUN apt-get install -y openjdk-8-jdk
+RUN apt-get install -y openjdk-11-jdk
 
 ARG UNAME
 ARG UID
