@@ -51,8 +51,8 @@ class CaptioningDataset(Dataset):
         self.max_object_per_frame = args.max_object_per_frame
         self.max_object_length = (2 * self.max_frame_num + 1) * self.max_object_per_frame
         self.max_frame_length = 2 * self.max_frame_num + 1
-        self.max_frame_difference_length = self.max_frame_num ** 2 + self.max_frame_num * 2
-        self.max_frame_difference_length = 1
+        self.max_frame_difference_length = self.max_frame_num ** 2 + self.max_frame_num * 2 #TODO: 아래 왜 다시 1?
+        # self.max_frame_difference_length = 1
         self.max_action_length = args.max_action_length
         self.max_seq_length = self.max_token_length + self.max_object_length + \
                               self.max_frame_length + self.max_frame_difference_length + self.max_action_length
