@@ -126,7 +126,6 @@ class CaptionExtraction:
         # define details of captions
         self.max_token_length = args.max_token_length
         self.tokenizer = tokenizer
-        self.tokenizer.add_special_tokens({'cls_token':'[CLS]'})
         
     def get_tokens(self, caption, splitter='//'):
         
@@ -143,25 +142,22 @@ class CaptionExtraction:
         input_ids, attention_mask = self.padding_tokens(
             input_ids      = input_ids,
             attention_mask = attention_mask,
-            eos_ids        = self.tokenizer.encode(self.tokenizer.eos_token),
-            cls_ids        = self.tokenizer.encode(self.tokenizer.cls_token)
+            eos_ids        = self.tokenizer.encode(self.tokenizer.eos_token)
         )
-        
+    
         return torch.tensor(input_ids), torch.LongTensor(attention_mask)
 
-    def padding_tokens(self, input_ids, attention_mask, eos_ids, cls_ids):
+    def padding_tokens(self, input_ids, attention_mask, eos_ids):
         if len(input_ids) < self.max_token_length:
             pad_length = self.max_token_length - len(input_ids)
-            input_ids += (eos_ids * (pad_length-1)) + cls_ids
-            attention_mask += ([0] * (pad_length - 1)) + [1]
+            input_ids += (eos_ids * pad_length)
+            attention_mask += ([0] * pad_length)
 
         elif len(input_ids) > self.max_token_length:
-            input_ids = input_ids[:self.max_token_length-2] + eos_ids + cls_ids
+            input_ids = input_ids[:self.max_token_length-1] + eos_ids
             attention_mask = attention_mask[:self.max_token_length] 
             
         return input_ids, attention_mask
-    
-    
     
     
 class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
