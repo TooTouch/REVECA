@@ -1,1 +1,2 @@
 transformers==4.18.0
+einops==0.4.1
