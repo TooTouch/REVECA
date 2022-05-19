@@ -190,14 +190,21 @@ class VideoBoudnaryCoca(nn.Module):
         caption_loss_weight,
         contrastive_loss_weight,
         num_img_queries = 256,
-        heads = 8
+        heads = 8,
+        pad_id = None
     ):
+
+        # models
         self.image_encoder = image_encoder
         self.unimodal_decoder = unimodal_decoder 
         self.multimodal_decoder = multimodal_decoder 
 
+        # loss weights
         self.caption_loss_weight = caption_loss_weight
         self.contrastive_loss_weight = contrastive_loss_weight
+
+        # pad id
+        self.pad_id = pad_id
 
         # cls embedding
         self.text_cls_token = nn.Parameter(torch.randn(dim))
@@ -225,7 +232,11 @@ class VideoBoudnaryCoca(nn.Module):
         self.to_logits[-1].weight = self.unimodal_decoder.wte.weight
         nn.init.normal_(self.token_emb.weight, std=0.02)
 
-    def forward(self, captions, frames, labels=None, return_loss=False):
+    def forward(self, captions, frames, return_loss=False):
+        # split captions and labels
+        if return_loss:
+            captions, labels = captions[:, :-1], captions[:, 1:]
+
         # unimodal decoding
         captions_cls_embed, captions_embed = self.embed_captions(captions)
 
