@@ -5,7 +5,7 @@ from models import create_model
 import argparse
 
 
-def get_args():
+def get_args(notebook=False):
     parser = argparse.ArgumentParser()
     # dataset
     parser.add_argument('--datadir', type=str, default='/datasets/GEBC', help='dataset directory')
@@ -21,7 +21,10 @@ def get_args():
     parser.add_argument('--num_img_queries', type=int, default=256 ,help='number of image queries')
     parser.add_argument('--num_heads', type=int, default=8, help='number of attentional pooling heads')
 
-    args = parser.parse_arges()
+    if notebook:
+        args = parser.parse_arges(args=[])
+    else:
+        args = parser.parse_arges()
 
     return args
 
