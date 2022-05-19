@@ -120,6 +120,7 @@ class CrossAttention(nn.Module):
         return out
 
 
+
 class MultiModalDecoder(GPT2Model):
     def __init__(self, config):
         super().__init__(config)
@@ -204,10 +205,6 @@ class VideoBoudnaryCoCa(nn.Module):
         # pad id
         self.pad_id = pad_id
 
-        # cls embedding
-        dim = self.unimodal_decoder.config.n_embd
-        self.text_cls_token = nn.Parameter(torch.randn(dim))
-
         # attention pooling for image tokens
         dim = self.unimodal_decoder.config.n_embd
         image_dim = self.image_encoder.embed_dim
@@ -230,10 +227,9 @@ class VideoBoudnaryCoCa(nn.Module):
         # they used embedding weight tied projection out to logits, not common, but works
         self.to_logits[-1].weight = self.unimodal_decoder.wte.weight
 
-    def forward(self, captions, frames, return_loss=False):
+    def forward(self, captions, frames, labels=None, return_loss=False):
         # split captions and labels
-        if return_loss:
-            captions, labels = captions[:, :-1], captions[:, 1:]
+
 
         # unimodal decoding
         captions_cls_embed, captions_embed = self.embed_captions(captions)
@@ -244,7 +240,7 @@ class VideoBoudnaryCoCa(nn.Module):
         # multimodal decoding
         output = self.multimodal_decoder(
             hidden_states = captions_embed,
-            attention_mask = captions['attention_mask'],
+            attention_mask = captions['attention_mask'][:,:-1],
             encoder_hidden_states = frames_embed
         )
 
@@ -255,14 +251,6 @@ class VideoBoudnaryCoCa(nn.Module):
 
 
     def embed_captions(self, captions):
-        batch = captions['input_ids'].shape[0]
-    
-        cls_tokens = repeat(self.text_cls_token, 'd -> b 1 d', b=batch)
-        captions['input_ids'] = torch.cat((captions['input_ids'], cls_tokens), dim=-2)
-        
-        cls_attention_mask = repeat(torch.tensor([1]),'1 -> b 1', b=batch)
-        captions['attention_mask'] = torch.cat((captions['attention_mask'], cls_attention_mask), dim=-1)
-
         unimodal_output = self.unimodal_decoder(**captions)
         cls_embed = unimodal_output['last_hidden_state'][:,-1]
         captions_embed = unimodal_output['last_hidden_state'][:,:-1]
@@ -273,9 +261,9 @@ class VideoBoudnaryCoCa(nn.Module):
 
 
     def embed_frame(self, frame):    
-        self.img_encoder.eval()
+        self.image_encoder.eval()
         with torch.no_grad():
-            image_tokens = self.img_encoder.forward_features(frame).detach()
+            image_tokens = self.image_encoder.forward_features(frame).detach()
 
         # attention pool image tokens
         img_queries = repeat(self.img_queries, 'n d -> b n d', b=image_tokens.shape[0])
@@ -338,6 +326,7 @@ class VideoBoudnaryCoCa(nn.Module):
 def create_model(args, tokenizer):
     image_encoder = timm_create_model(args.image_modelname, pretrained=True, img_size=args.img_size)
     unimodal_decoder = GPT2Model.from_pretrained(args.unimodal_modelname)
+    unimodal_decoder.resize_token_embeddings(len(tokenizer))
 
     config = GPT2Config()
     config.add_cross_attention = True
@@ -352,7 +341,7 @@ def create_model(args, tokenizer):
         contrastive_loss_weight = args.contrastive_loss_weight,
         num_img_queries         = args.num_img_queries,
         heads                   = args.num_heads,
-        pad_id                  = tokenizer.eos_token
+        pad_id                  = tokenizer.encode(tokenizer.eos_token)[0]
     )
 
     return model
