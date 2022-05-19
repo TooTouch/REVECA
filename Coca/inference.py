@@ -15,8 +15,6 @@ def infer(args, model, tokenizer, dataloader):
     model.eval()
     with torch.no_grad():
         for idx, inputs in enumerate(tqdm(dataloader)):
-            if idx == 5:
-                break
             boundary_ids, frames = agg_inputs_to_batch(inputs, test_mode=True)
             frames = convert_device(frames, args.device)
             

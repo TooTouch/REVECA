@@ -103,8 +103,6 @@ def validation(model, dataloader, log_interval, device='cpu'):
     model.eval()
     with torch.no_grad():
         for idx, inputs in enumerate(dataloader):
-            if idx == 30:
-                break
             _, captions, frames, labels = agg_inputs_to_batch(inputs)
             captions, frames, labels = convert_device(captions, device), convert_device(frames, device), labels.to(device)
             

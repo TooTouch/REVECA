@@ -1,1 +1,5 @@
-python main.py --exp_name 'test' --do_train --num_training_steps 5 --log_interval 5 --save_interval 5
+python main.py --exp_name 'VideoBoundaryCoCa' --do_train \
+                    --batch_size 32 \
+                    --num_training_steps 10000 \
+                    --log_interval 5 \
+                    --save_interval 500
