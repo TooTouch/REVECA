@@ -178,7 +178,7 @@ class MultiModalDecoder(GPT2Model):
 
 
 
-class VideoBoudnaryCoca(nn.Module):
+class VideoBoudnaryCoCa(nn.Module):
     def __init__(
         self, 
         num_tokens, 
@@ -191,7 +191,7 @@ class VideoBoudnaryCoca(nn.Module):
         heads = 8,
         pad_id = None
     ):
-
+        super(VideoBoudnaryCoCa).__init__()
         # models
         self.image_encoder = image_encoder
         self.unimodal_decoder = unimodal_decoder 
@@ -343,7 +343,7 @@ def create_model(args, tokenizer):
     config.add_cross_attention = True
     multimodal_decoder = MultiModalDecoder.from_pretrained(args.unimodal_modelname, config=config)
 
-    model = VideoBoudnaryCoca(
+    model = VideoBoudnaryCoCa(
         num_tokens              = len(tokenizer), 
         image_encoder           = image_encoder, 
         unimodal_decoder        = unimodal_decoder, 
