@@ -1,5 +1,5 @@
 from build_dataset import create_dataloader
-from transformers import GPT2Tokenizer, GPT2Model
+from transformers import GPT2Tokenizer
 from models import create_model
 
 import argparse
@@ -22,9 +22,9 @@ def get_args(notebook=False):
     parser.add_argument('--num_heads', type=int, default=8, help='number of attentional pooling heads')
 
     if notebook:
-        args = parser.parse_arges(args=[])
+        args = parser.parse_args(args=[])
     else:
-        args = parser.parse_arges()
+        args = parser.parse_args()
 
     return args
 
