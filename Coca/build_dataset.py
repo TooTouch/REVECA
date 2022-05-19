@@ -136,29 +136,59 @@ class CaptionExtraction:
         # add eos token
         caption = caption + self.tokenizer.eos_token
     
+        # input_ids
         input_ids = self.tokenizer.encode(caption)
+
+        # extract label_ids
+        input_ids, label_ids = self.extract_label_ids(input_ids)
+
+        # attention_mask
         attention_mask = [1] * len(input_ids)
 
-        input_ids, attention_mask = self.padding_tokens(
+        # padding
+        input_ids, label_ids, attention_mask = self.padding_tokens(
+            input_ids      = input_ids,
+            label_ids      = label_ids,
+            attention_mask = attention_mask,
+            eos_id         = self.tokenizer.encode(self.tokenizer.eos_token)
+        )
+
+        input_ids, attention_mask = self.add_cls_token(
             input_ids      = input_ids,
             attention_mask = attention_mask,
-            eos_ids        = self.tokenizer.encode(self.tokenizer.eos_token)
+            cls_id         = self.tokenizer.encode(self.tokenizer.cls_token)
         )
-    
-        return torch.tensor(input_ids), torch.LongTensor(attention_mask)
 
-    def padding_tokens(self, input_ids, attention_mask, eos_ids):
+        return torch.tensor(input_ids), torch.tensor(label_ids), torch.LongTensor(attention_mask)
+
+    def padding_tokens(self, input_ids, label_ids, attention_mask, eos_id):
+        """
+        Add [CLS] token for CoCa
+        """
         if len(input_ids) < self.max_token_length:
             pad_length = self.max_token_length - len(input_ids)
-            input_ids += (eos_ids * pad_length)
+            input_ids += (eos_id * pad_length) 
             attention_mask += ([0] * pad_length)
 
+            label_ids += (eos_id * pad_length)
+
         elif len(input_ids) > self.max_token_length:
-            input_ids = input_ids[:self.max_token_length-1] + eos_ids
+            input_ids = input_ids[:self.max_token_length-1] + eos_id
             attention_mask = attention_mask[:self.max_token_length] 
-            
-        return input_ids, attention_mask
+
+            label_ids = input_ids[:self.max_token_length-1] + eos_id
+
+        return input_ids, label_ids, attention_mask
     
+    def add_cls_token(self, input_ids, attention_mask, cls_id):
+        input_ids += cls_id
+        attention_mask += [1]
+        return input_ids, attention_mask
+
+    def extract_label_ids(self, input_ids):
+        return input_ids[:-1], input_ids[1:]
+    
+
     
 class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
     def __init__(self, args, split, tokenizer, transform=None):
@@ -189,9 +219,9 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
         caption = boundary['caption']        
         
         frames = self.get_frames(video_id, timestamps)
-        input_ids, attention_mask = self.get_tokens(caption)
+        input_ids, label_ids, attention_mask = self.get_tokens(caption)
         
-        return {'input_ids':input_ids, 'attention_mask':attention_mask}, frames
+        return {'input_ids':input_ids, 'attention_mask':attention_mask}, frames, label_ids
 
     def build_boundary_list(self):
         boundary_list = []
@@ -206,11 +236,10 @@ def create_dataloader(args, split, tokenizer):
     # Load Data
     transform = transforms.Compose([
         transforms.ToPILImage(),
-        transforms.Resize((224,)),
+        transforms.Resize((args.img_size,args.img_size)),
         transforms.ToTensor(),
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
-
 
     dataset = BoundaryCaptioningDataset(args, split, tokenizer, transform)
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=split=='train', num_workers=args.num_workers)
