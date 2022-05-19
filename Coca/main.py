@@ -16,6 +16,9 @@ def get_args(notebook=False):
     parser.add_argument('--max_sample_num', type=int, default=10, help='maximum frames of before or after')
 
     # model
+    parser.add_argument('--image_modelname', type=str, default='vit_base_patch16_224', choices=['vit_base_patch16_224'], help='image model name')
+    parser.add_argument('--unimodal_modelname', type=str, default='gpt2', choices=['gpt2'], help='unimodal model name')
+    parser.add_argument('--multimodal_modelname', type=str, default='gpt2', choices=['gpt2'], help='multimodal model name')
     parser.add_argument('--caption_loss_weight', type=float, default=1.,help='caption loss weight')
     parser.add_argument('--contrastive_loss_weight', type=float, default=1.,help='contrastive loss weight')
     parser.add_argument('--num_img_queries', type=int, default=256 ,help='number of image queries')
