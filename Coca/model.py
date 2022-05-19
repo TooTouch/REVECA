@@ -2,9 +2,9 @@ import torch
 from torch import einsum, nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
-from transformers import GPT2Model
+from transformers import GPT2Model, GPT2Config
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
-
+from timm import create_model as timm_create_model
 
 
 def exists(val):
@@ -120,12 +120,10 @@ class CrossAttention(nn.Module):
         return out
 
 
-
 class MultiModalDecoder(GPT2Model):
     def __init__(self, config):
         super().__init__(config)
         
-
     def forward(
         self, 
         hidden_states, 
@@ -160,10 +158,10 @@ class MultiModalDecoder(GPT2Model):
         for i, block in enumerate(self.h):
             outputs = block(
                 hidden_states,
-                attention_mask=attention_mask,
-                encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=encoder_attention_mask,
-                use_cache=use_cache,
+                attention_mask         = attention_mask,
+                encoder_hidden_states  = encoder_hidden_states,
+                encoder_attention_mask = encoder_attention_mask,
+                use_cache              = use_cache,
             )
 
             hidden_states, present = outputs[:2]
@@ -334,3 +332,27 @@ class VideoBoudnaryCoca(nn.Module):
         contrastive_loss = contrastive_loss * self.contrastive_loss_weight
 
         return caption_loss + contrastive_loss
+
+
+
+def create_model(args, tokenizer):
+    image_encoder = timm_create_model(args.image_modelname, pretrained=True, img_size=args.img_size)
+    unimodal_decoder = GPT2Model.from_pretrained(args.unimodal_modelname)
+
+    config = GPT2Config()
+    config.add_cross_attention = True
+    multimodal_decoder = MultiModalDecoder.from_pretrained(args.unimodal_modelname, config=config)
+
+    model = VideoBoudnaryCoca(
+        num_tokens              = len(tokenizer), 
+        image_encoder           = image_encoder, 
+        unimodal_decoder        = unimodal_decoder, 
+        multimodal_decoder      = multimodal_decoder,
+        caption_loss_weight     = args.caption_loss_weight,
+        contrastive_loss_weight = args.contrastive_loss_weight,
+        num_img_queries         = args.num_img_queries,
+        heads                   = args.num_heads,
+        pad_id                  = tokenizer.eos_token
+    )
+
+    return model
