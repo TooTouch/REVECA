@@ -191,11 +191,14 @@ class CaptionExtraction:
 
     
 class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
-    def __init__(self, args, split, tokenizer, transform=None):
+    def __init__(self, args, split, tokenizer, transform=None, test_mode=False):
         super(BoundaryCaptioningDataset).__init__()
         VideoExtraction.__init__(self, args, split, transform)
         CaptionExtraction.__init__(self, args, tokenizer)
         
+        # test mode
+        self.test_mode = test_mode
+
         # read yaml file
         self.yaml_file = args.yaml_file
         self.cfg = load_from_yaml_file(self.yaml_file)
@@ -216,12 +219,16 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
         video_id = boundary_id[:11]
 
         timestamps = [boundary['prev_timestamp'], boundary['timestamp'], boundary['next_timestamp']]
-        caption = boundary['caption']        
-        
         frames = self.get_frames(video_id, timestamps)
-        input_ids, label_ids, attention_mask = self.get_tokens(caption)
-        
-        return {'input_ids':input_ids, 'attention_mask':attention_mask}, frames, label_ids
+
+        if not self.test_mode:
+            caption = boundary['caption']        
+            input_ids, label_ids, attention_mask = self.get_tokens(caption)
+            return boundary_id, {'input_ids':input_ids, 'attention_mask':attention_mask}, frames, label_ids
+            
+        else:
+            return boundary_id, frames
+            
 
     def build_boundary_list(self):
         boundary_list = []
