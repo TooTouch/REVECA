@@ -3,7 +3,8 @@ from torch import einsum, nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
 from transformers import GPT2Model, GPT2Config
-from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
+from transformers.generation_utils import GenerationMixin
+from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions, CausalLMOutputWithCrossAttentions
 from timm import create_model as timm_create_model
 
 
@@ -12,6 +13,17 @@ def exists(val):
 
 def default(val, d):
     return val if exists(val) else d
+
+def set_module_requires_grad_(module, requires_grad):
+    for param in module.parameters():
+        param.requires_grad = requires_grad
+
+def freeze_all_layers_(module):
+    set_module_requires_grad_(module, False)
+
+def freeze_model_and_make_eval_(model):
+    model.eval()
+    freeze_all_layers_(model)
 
 
 class LayerNorm(nn.Module):
@@ -119,19 +131,18 @@ class CrossAttention(nn.Module):
 
         return out
 
-
-
 class MultiModalDecoder(GPT2Model):
     def __init__(self, config):
         super().__init__(config)
-        
+
     def forward(
         self, 
         hidden_states, 
         attention_mask, 
         encoder_hidden_states,
         use_cache=None
-   ):
+   ):   
+
         use_cache = use_cache if use_cache is not None else self.config.use_cache
 
         output_shape = hidden_states.size()
@@ -178,8 +189,7 @@ class MultiModalDecoder(GPT2Model):
         )
 
 
-
-class VideoBoudnaryCoCa(nn.Module):
+class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
     def __init__(
         self, 
         num_tokens, 
@@ -190,13 +200,25 @@ class VideoBoudnaryCoCa(nn.Module):
         contrastive_loss_weight,
         num_img_queries = 256,
         heads = 8,
-        pad_id = None
+        pad_id = None,
     ):
         super().__init__()
+        GenerationMixin.__init__(self)
+
+        # config
+        self.config = GPT2Config()
+        self.config.is_encoder_decoder = True
+        self.main_input_name = 'frames'
+
         # models
         self.image_encoder = image_encoder
         self.unimodal_decoder = unimodal_decoder 
         self.multimodal_decoder = multimodal_decoder 
+
+        freeze_model_and_make_eval_(self.image_encoder)
+
+        # device
+        self.device = self.unimodal_decoder.device
 
         # loss weights
         self.caption_loss_weight = caption_loss_weight
@@ -225,22 +247,23 @@ class VideoBoudnaryCoCa(nn.Module):
         )
 
         # they used embedding weight tied projection out to logits, not common, but works
-        self.to_logits[-1].weight = self.unimodal_decoder.wte.weight
+        self.to_logits[-1].weight = nn.Parameter(self.unimodal_decoder.wte.weight[:-1,:])
 
-    def forward(self, captions, frames, labels=None, return_loss=False):
-        # split captions and labels
-
-
+    def forward(self, captions, frames=None, frames_embed=None, labels=None, return_loss=False, **kwargs):
         # unimodal decoding
-        captions_cls_embed, captions_embed = self.embed_captions(captions)
+        captions_cls_embed, captions_embed = self.embed_captions(captions, cls_return=return_loss)
 
         # image encoding
-        frames_cls_embed, frames_embed = self.aggregation_frames(frames)
+        if frames_embed is None:
+            captions['attention_mask'] = captions['attention_mask'][:,:-1]
+            frames_cls_embed, frames_embed = self.aggregation_frames(frames)
+        else:
+            captions['attention_mask'] = None
 
         # multimodal decoding
         output = self.multimodal_decoder(
             hidden_states = captions_embed,
-            attention_mask = captions['attention_mask'][:,:-1],
+            attention_mask = captions['attention_mask'],
             encoder_hidden_states = frames_embed
         )
 
@@ -249,15 +272,24 @@ class VideoBoudnaryCoCa(nn.Module):
         if return_loss:
             return self.calc_loss(captions_cls_embed, frames_cls_embed, logits, labels)
 
+        else:
+            return CausalLMOutputWithCrossAttentions(
+                logits = logits
+            )
 
-    def embed_captions(self, captions):
+
+    def embed_captions(self, captions, cls_return=True):
         unimodal_output = self.unimodal_decoder(**captions)
-        cls_embed = unimodal_output['last_hidden_state'][:,-1]
-        captions_embed = unimodal_output['last_hidden_state'][:,:-1]
+        
+        if cls_return:
+            cls_embed = unimodal_output['last_hidden_state'][:,-1]
+            captions_embed = unimodal_output['last_hidden_state'][:,:-1]
 
-        # get text cls token
-        cls_embed = self.cls_norm(cls_embed)
-        return cls_embed, captions_embed
+            # get text cls token
+            cls_embed = self.cls_norm(cls_embed)
+            return cls_embed, captions_embed
+        else:
+            return None, unimodal_output['last_hidden_state']
 
 
     def embed_frame(self, frame):    
@@ -322,6 +354,52 @@ class VideoBoudnaryCoCa(nn.Module):
         return caption_loss + contrastive_loss
 
 
+    def get_encoder(self):
+        return self.aggregation_frames
+
+    def _prepare_model_inputs(
+        self,
+        inputs = None,
+        bos_token_id = None,
+        model_kwargs = None,
+    ):
+
+        return inputs['boundary'], inputs, model_kwargs
+
+    def prepare_inputs_for_generation(self, captions, **model_kwargs):
+        return {'captions':{'input_ids':captions}, 'frames_embed':model_kwargs['encoder_outputs']}
+
+    def _prepare_encoder_decoder_kwargs_for_generation(
+        self, inputs_tensor: torch.Tensor, model_kwargs, model_input_name = None
+    ):
+        frames = model_input_name # actually this is frames
+        encoder = self.get_encoder()
+
+        model_kwargs["encoder_outputs"] = encoder(frames)[1]
+
+        return model_kwargs
+
+
+    @staticmethod
+    def _expand_inputs_for_generation(
+        input_ids,
+        expand_size = 1,
+        is_encoder_decoder = False,
+        encoder_outputs = None,
+        **model_kwargs,
+    ):
+        expanded_return_idx = (
+            torch.arange(input_ids.shape[0]).view(-1, 1).repeat(1, expand_size).view(-1).to(input_ids.device)
+        )
+        input_ids = input_ids.index_select(0, expanded_return_idx)
+
+        if is_encoder_decoder:
+            encoder_outputs = encoder_outputs.index_select(
+                0, expanded_return_idx.to(encoder_outputs.device)
+            )
+            model_kwargs["encoder_outputs"] = encoder_outputs
+        return input_ids, model_kwargs
+
 
 def create_model(args, tokenizer):
     image_encoder = timm_create_model(args.image_modelname, pretrained=True, img_size=args.img_size)
@@ -333,7 +411,7 @@ def create_model(args, tokenizer):
     multimodal_decoder = MultiModalDecoder.from_pretrained(args.unimodal_modelname, config=config)
 
     model = VideoBoudnaryCoCa(
-        num_tokens              = len(tokenizer), 
+        num_tokens              = len(tokenizer)-1, 
         image_encoder           = image_encoder, 
         unimodal_decoder        = unimodal_decoder, 
         multimodal_decoder      = multimodal_decoder,
