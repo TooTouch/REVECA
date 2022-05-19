@@ -1,6 +1,6 @@
-train_annotation: datasets/annotations/trainset_highest_f1_removed3video.json
+train_annotation: datasets/annotations/trainset_highest_f1.json
 test_annotation: datasets/annotations/testset_highest_f1.json
-val_annotation: datasets/annotations/valset_highest_f1.json
+val_annotation: datasets/annotations/valset_highest_f1_remove1video.json
 
 train_gebd_proposals: datasets/annotations/trainset_gebd_proposals.json
 test_gebd_proposals: datasets/annotations/testset_gebd_proposals.json
