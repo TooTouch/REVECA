@@ -19,6 +19,7 @@ def get_args(notebook=False):
     parser.add_argument('--image_modelname', type=str, default='vit_base_patch16_224', choices=['vit_base_patch16_224'], help='image model name')
     parser.add_argument('--unimodal_modelname', type=str, default='gpt2', choices=['gpt2'], help='unimodal model name')
     parser.add_argument('--multimodal_modelname', type=str, default='gpt2', choices=['gpt2'], help='multimodal model name')
+    parser.add_argument('--img_size', type=int, default=224, help='image size')
     parser.add_argument('--caption_loss_weight', type=float, default=1.,help='caption loss weight')
     parser.add_argument('--contrastive_loss_weight', type=float, default=1.,help='contrastive loss weight')
     parser.add_argument('--num_img_queries', type=int, default=256 ,help='number of image queries')
@@ -35,8 +36,11 @@ def get_args(notebook=False):
 if __name__ == '__main__':
     args = get_args()
 
-    # dataloader
+    # tokenizer
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+    tokenizer.add_special_tokens({'cls_token':'[CLS]'})
+
+    # dataloader
     trainloader = create_dataloader(args, 'train', tokenizer)
     testloader = create_dataloader(args, 'val', tokenizer)
 
