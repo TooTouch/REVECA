@@ -191,7 +191,7 @@ class VideoBoudnaryCoCa(nn.Module):
         heads = 8,
         pad_id = None
     ):
-        super(VideoBoudnaryCoCa).__init__()
+        super().__init__()
         # models
         self.image_encoder = image_encoder
         self.unimodal_decoder = unimodal_decoder 
@@ -205,6 +205,7 @@ class VideoBoudnaryCoCa(nn.Module):
         self.pad_id = pad_id
 
         # cls embedding
+        dim = self.unimodal_decoder.config.n_embd
         self.text_cls_token = nn.Parameter(torch.randn(dim))
 
         # attention pooling for image tokens
@@ -228,7 +229,6 @@ class VideoBoudnaryCoCa(nn.Module):
 
         # they used embedding weight tied projection out to logits, not common, but works
         self.to_logits[-1].weight = self.unimodal_decoder.wte.weight
-        nn.init.normal_(self.token_emb.weight, std=0.02)
 
     def forward(self, captions, frames, return_loss=False):
         # split captions and labels
