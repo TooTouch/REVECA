@@ -1,0 +1,1 @@
+python main.py --exp_name 'test' --do_train --num_training_steps 5 --log_interval 5 --save_interval 5

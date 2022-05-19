@@ -201,9 +201,12 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         num_img_queries = 256,
         heads = 8,
         pad_id = None,
+        device = 'cpu'
     ):
         super().__init__()
         GenerationMixin.__init__(self)
+
+        self.device = device
 
         # config
         self.config = GPT2Config()
@@ -216,9 +219,6 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         self.multimodal_decoder = multimodal_decoder 
 
         freeze_model_and_make_eval_(self.image_encoder)
-
-        # device
-        self.device = self.unimodal_decoder.device
 
         # loss weights
         self.caption_loss_weight = caption_loss_weight
@@ -367,7 +367,8 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         return inputs['boundary'], inputs, model_kwargs
 
     def prepare_inputs_for_generation(self, captions, **model_kwargs):
-        return {'captions':{'input_ids':captions}, 'frames_embed':model_kwargs['encoder_outputs']}
+        captions = captions.to(self.device)
+        return {'captions':{'input_ids':captions.to(self.device)}, 'frames_embed':model_kwargs['encoder_outputs']}
 
     def _prepare_encoder_decoder_kwargs_for_generation(
         self, inputs_tensor: torch.Tensor, model_kwargs, model_input_name = None
@@ -419,7 +420,8 @@ def create_model(args, tokenizer):
         contrastive_loss_weight = args.contrastive_loss_weight,
         num_img_queries         = args.num_img_queries,
         heads                   = args.num_heads,
-        pad_id                  = tokenizer.encode(tokenizer.eos_token)[0]
+        pad_id                  = tokenizer.encode(tokenizer.eos_token)[0],
+        device                  = args.device
     )
 
     return model

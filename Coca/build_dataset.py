@@ -5,7 +5,7 @@ from glob import glob
 import pandas as pd
 import cv2
 import numpy as np
-
+from einops import repeat
 import torch
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
@@ -42,7 +42,10 @@ class VideoExtraction:
         
         # sampling frames
         frames = self.extract_frames(cap, sampled_times)
-        
+
+        # same padding frames
+        frames = self.same_padding(frames)
+
         return frames
         
     def extract_time_list(self, cap):
@@ -80,8 +83,28 @@ class VideoExtraction:
 
             idx += 1
 
+        frame_dict['before'] = torch.stack(frame_dict['before'])
+        frame_dict['after'] = torch.stack(frame_dict['after'])
+
         return frame_dict
-    
+
+    def same_padding(self, frames):
+        if frames['before'].shape[0] < self.max_sample_num:
+            empty_num = self.max_sample_num - frames['before'].shape[0]
+            frames['before'] = torch.cat([
+                repeat(frames['before'][0], 'c h w -> e c h w', e=empty_num),
+                frames['before']
+            ], dim=0)
+        
+        if frames['after'].shape[0] < self.max_sample_num:
+            empty_num = self.max_sample_num - frames['after'].shape[0]
+            frames['after'] = torch.cat([
+                frames['after'],
+                repeat(frames['after'][-1], 'c h w -> e c h w', e=empty_num),
+            ], dim=0)
+
+        return frames
+
     def time_sampling(self, time_list, timestamps):
         sampled_time = dict()
         # find nearest matching
@@ -224,10 +247,10 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
         if not self.test_mode:
             caption = boundary['caption']        
             input_ids, label_ids, attention_mask = self.get_tokens(caption)
-            return boundary_id, {'input_ids':input_ids, 'attention_mask':attention_mask}, frames, label_ids
+            return boundary_id, input_ids, attention_mask, frames['boundary'], frames['before'], frames['after'], label_ids
             
         else:
-            return boundary_id, frames
+            return boundary_id, frames['boundary'], frames['before'], frames['after']
             
 
     def build_boundary_list(self):
@@ -237,9 +260,15 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
                 boundary_list.append(b)
         return boundary_list
 
+    def get_caption(self):
+        caption_dict = dict()
+        for boundary in self.boundary_list:
+            caption_dict[boundary['boundary_id']] = [boundary['caption']]
+        return caption_dict
 
 
-def create_dataloader(args, split, tokenizer):
+
+def create_dataloader(args, split, tokenizer, test_mode=False):
     # Load Data
     transform = transforms.Compose([
         transforms.ToPILImage(),
@@ -248,7 +277,13 @@ def create_dataloader(args, split, tokenizer):
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
 
-    dataset = BoundaryCaptioningDataset(args, split, tokenizer, transform)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=split=='train', num_workers=args.num_workers)
+    dataset = BoundaryCaptioningDataset(args, split, tokenizer, transform, test_mode)
+    dataloader = DataLoader(
+        dataset, 
+        batch_size  = args.batch_size, 
+        shuffle     = split=='train', 
+        num_workers = args.num_workers,
+        collate_fn  = lambda x: tuple(zip(*x))
+    )
 
     return dataloader

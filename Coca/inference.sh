@@ -1,0 +1,1 @@
+python main.py --exp_name 'test' --do_test --num_beams 2 --checkpoint_path ./output/test/test_step4.pt
