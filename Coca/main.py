@@ -31,12 +31,19 @@ def get_args(notebook=False):
     parser.add_argument('--savedir', type=str, default='./output', help='save directory')
     parser.add_argument('--yaml_file', type=str, default='../config/captioning_config.yaml', help='config file path')
     parser.add_argument('--batch_size', type=int, default=2, help='batch size')
-    parser.add_argument('--num_workers', type=int, default=8, help='number of workeres in dataloader')
+    parser.add_argument('--num_workers', type=int, default=2, help='number of workeres in dataloader')
     parser.add_argument('--max_token_length', type=int, default=128, help='maximum token length')
     parser.add_argument('--max_sample_num', type=int, default=10, help='maximum frames of before or after')
+    parser.add_argument('--use_saved_frame', action='store_true', default=False, help='use saved frames')
 
     # model
-    parser.add_argument('--image_modelname', type=str, default='vit_base_patch16_224', choices=['vit_base_patch16_224'], help='image model name')
+    parser.add_argument(
+        '--image_modelname',
+        type=str, 
+        default='vit_huge_patch14_224_in21k', 
+        choices=['vit_base_patch16_224', 'vit_huge_patch14_224_in21k'], 
+        help='image model name'
+    )
     parser.add_argument('--unimodal_modelname', type=str, default='gpt2', choices=['gpt2'], help='unimodal model name')
     parser.add_argument('--multimodal_modelname', type=str, default='gpt2', choices=['gpt2'], help='multimodal model name')
     parser.add_argument('--img_size', type=int, default=224, help='image size')
@@ -73,8 +80,9 @@ def get_args(notebook=False):
         args = parser.parse_args()
 
     # savedir
-    args.savedir = os.path.join(args.savedir,args.exp_name)
-    os.makedirs(args.savedir, exist_ok=True)
+    if args.do_train:
+        args.savedir = os.path.join(args.savedir,args.exp_name)
+        os.makedirs(args.savedir, exist_ok=True)
 
     # gpus
     args.gpu_ids = list(map(int, args.gpu_ids.split(' ')))
@@ -96,7 +104,7 @@ if __name__ == '__main__':
     # gpu device
     _logger.info('Device: {}'.format(args.device))
 
-    if args.wandb:
+    if args.wandb and args.do_train:
         # wandb
         wandb.init(name=args.exp_name, project='GEBC VideoCoCa', config=args)
 
@@ -141,7 +149,7 @@ if __name__ == '__main__':
         
         filename = f'pred_beam{args.num_beams}'
         filename += 'val' if args.do_val else 'test'
-        savepath = os.path.join(args.savedir, filename)
+        savepath = os.path.join(args.savedir, args.exp_name, filename)
 
         # save predict
         with open(savepath + f'.json','w') as fp:

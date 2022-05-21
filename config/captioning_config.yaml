@@ -1,4 +1,4 @@
-train_annotation: ../datasets/annotations/trainset_highest_f1.json
+train_annotation: ../datasets/annotations/trainset_highest_f1_removed2video0520.json
 test_annotation: ../datasets/annotations/testset_highest_f1.json
 val_annotation: ../datasets/annotations/valset_highest_f1_remove1video.json
 

@@ -10,6 +10,9 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
 
+import logging
+
+_logger = logging.getLogger('train')
 
 def load_from_yaml_file(yaml_file):
     with open(yaml_file, 'r') as f:
@@ -18,8 +21,8 @@ def load_from_yaml_file(yaml_file):
 def load_json(filename):
     with open(filename, "r") as f:
         return json.loads(f.readlines()[0].strip("\n"))
-    
-    
+
+
 class VideoExtraction:
     def __init__(self, args, split, transform=None):
         # define details of videos
@@ -38,7 +41,6 @@ class VideoExtraction:
         
         # sampling index
         sampled_times = self.time_sampling(time_list, timestamps)
-        self.sampled_times = sampled_times
         
         # sampling frames
         frames = self.extract_frames(cap, sampled_times)
@@ -83,25 +85,35 @@ class VideoExtraction:
 
             idx += 1
 
-        frame_dict['before'] = torch.stack(frame_dict['before'])
-        frame_dict['after'] = torch.stack(frame_dict['after'])
+        if len(frame_dict['before']) > 0:
+            frame_dict['before'] = torch.stack(frame_dict['before'])
+        if len(frame_dict['after']) > 0:
+            frame_dict['after'] = torch.stack(frame_dict['after'])
 
         return frame_dict
 
     def same_padding(self, frames):
-        if frames['before'].shape[0] < self.max_sample_num:
-            empty_num = self.max_sample_num - frames['before'].shape[0]
-            frames['before'] = torch.cat([
-                repeat(frames['before'][0], 'c h w -> e c h w', e=empty_num),
-                frames['before']
-            ], dim=0)
+        if len(frames['before']) < self.max_sample_num:
+            empty_num = self.max_sample_num - len(frames['before'])
+            
+            if empty_num == self.max_sample_num:
+                frames['before'] = repeat(frames['boundary'], 'c h w -> e c h w', e=empty_num)
+            else:
+                frames['before'] = torch.cat([
+                    repeat(frames['before'][0], 'c h w -> e c h w', e=empty_num),
+                    frames['before']
+                ], dim=0)
         
-        if frames['after'].shape[0] < self.max_sample_num:
-            empty_num = self.max_sample_num - frames['after'].shape[0]
-            frames['after'] = torch.cat([
-                frames['after'],
-                repeat(frames['after'][-1], 'c h w -> e c h w', e=empty_num),
-            ], dim=0)
+        if len(frames['after']) < self.max_sample_num:
+            empty_num = self.max_sample_num - len(frames['after'])
+
+            if empty_num == self.max_sample_num:
+                frames['after'] = repeat(frames['boundary'], 'c h w -> e c h w', e=empty_num)
+            else:
+                frames['after'] = torch.cat([
+                    frames['after'],
+                    repeat(frames['after'][-1], 'c h w -> e c h w', e=empty_num),
+                ], dim=0)
 
         return frames
 
@@ -141,9 +153,8 @@ class VideoExtraction:
             sampled_time['after'] = [sampled_time['after'][idx] for idx in sampled_idx]
 
         return sampled_time    
-    
-    
-    
+
+
 class CaptionExtraction:
     def __init__(self, args, tokenizer):
         # define details of captions
@@ -210,11 +221,10 @@ class CaptionExtraction:
 
     def extract_label_ids(self, input_ids):
         return input_ids[:-1], input_ids[1:]
-    
 
-    
+
 class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
-    def __init__(self, args, split, tokenizer, transform=None, test_mode=False):
+    def __init__(self, args, split, tokenizer, transform=None, use_saved_frame=True, test_mode=False):
         super(BoundaryCaptioningDataset).__init__()
         VideoExtraction.__init__(self, args, split, transform)
         CaptionExtraction.__init__(self, args, tokenizer)
@@ -225,10 +235,15 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
         # read yaml file
         self.yaml_file = args.yaml_file
         self.cfg = load_from_yaml_file(self.yaml_file)
- 
+
         # read annotation
-        assert split in ['train', 'test', 'val'], "Invalid split: split must in 'train', 'test' and 'val'."
+        self.split = split
+        assert self.split in ['train', 'test', 'val'], "Invalid split: split must in 'train', 'test' and 'val'."
         self.annotation = load_json(self.cfg[f'{split}_annotation'])
+
+        # read saved frames
+        self.datadir = args.datadir
+        self.use_saved_frame = use_saved_frame
 
         # make boundary list
         self.boundary_list = self.build_boundary_list()
@@ -242,15 +257,21 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
         video_id = boundary_id[:11]
 
         timestamps = [boundary['prev_timestamp'], boundary['timestamp'], boundary['next_timestamp']]
-        frames = self.get_frames(video_id, timestamps)
+
+        if self.use_saved_frame:
+            frames = torch.load(
+                os.path.join(self.datadir, 'frames', f'{self.split}/{boundary_id}.pt')
+            )[boundary_id]
+        else:
+            frames = self.get_frames(video_id, timestamps)
 
         if not self.test_mode:
             caption = boundary['caption']        
             input_ids, label_ids, attention_mask = self.get_tokens(caption)
-            return boundary_id, input_ids, attention_mask, frames['boundary'], frames['before'], frames['after'], label_ids
+            return boundary_id, {'input_ids':input_ids, 'attention_mask':attention_mask}, frames, label_ids
             
         else:
-            return boundary_id, frames['boundary'], frames['before'], frames['after']
+            return boundary_id, frames
             
 
     def build_boundary_list(self):
@@ -267,6 +288,13 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
         return caption_dict
 
 
+def make_data_sampler(dataset, shuffle):
+    if shuffle:
+        sampler = torch.utils.data.sampler.RandomSampler(dataset)
+    else:
+        sampler = torch.utils.data.sampler.SequentialSampler(dataset)
+    return sampler
+
 
 def create_dataloader(args, split, tokenizer, test_mode=False):
     # Load Data
@@ -277,13 +305,27 @@ def create_dataloader(args, split, tokenizer, test_mode=False):
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
 
-    dataset = BoundaryCaptioningDataset(args, split, tokenizer, transform, test_mode)
+    dataset = BoundaryCaptioningDataset(
+        args, split, tokenizer, transform, args.use_saved_frame, test_mode
+    )
+
+    samples_per_gpu = args.batch_size
+    samples_per_batch = samples_per_gpu * args.num_gpus
+    iters_per_batch = len(dataset) // samples_per_batch
+    num_iters = iters_per_batch * args.num_training_steps
+
+    if split == 'train':
+        _logger.info("Train with {} samples per GPU.".format(samples_per_gpu))
+        _logger.info("Total batch size {}".format(samples_per_batch))
+        _logger.info("Total training steps {}".format(num_iters))
+
+
     dataloader = DataLoader(
         dataset, 
-        batch_size  = args.batch_size, 
-        shuffle     = split=='train', 
+        batch_size  = samples_per_batch, 
+        sampler     = make_data_sampler(dataset, split=='train'),
         num_workers = args.num_workers,
-        collate_fn  = lambda x: tuple(zip(*x))
+        pin_memory  = True
     )
 
     return dataloader

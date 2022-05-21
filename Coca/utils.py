@@ -43,8 +43,8 @@ def agg_inputs_to_batch(inputs, test_mode=False):
 
         frames = {
             'boundary':torch.stack(inputs[3]),
-            'before':torch.stack(list(inputs[4]), dim=1),
-            'after':torch.stack(list(inputs[5]), dim=1)
+            'before':torch.stack(list(inputs[4]), dim=0),
+            'after':torch.stack(list(inputs[5]), dim=0)
         }
 
         labels = torch.stack(inputs[6])
@@ -53,8 +53,8 @@ def agg_inputs_to_batch(inputs, test_mode=False):
     else:
         frames = {
             'boundary':torch.stack(inputs[1]),
-            'before':torch.stack(list(inputs[2]), dim=1),
-            'after':torch.stack(list(inputs[3]), dim=1)
+            'before':torch.stack(list(inputs[2]), dim=0),
+            'after':torch.stack(list(inputs[3]), dim=0)
         }
 
         return boundary_ids, frames

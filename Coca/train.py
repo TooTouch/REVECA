@@ -43,18 +43,18 @@ def training(
     model.train()
     optimizer.zero_grad()
     for step in range(args.num_training_steps):    
-        inputs = next(iter(trainloader))
-        _, captions, frames, labels = agg_inputs_to_batch(inputs)
+        _, captions, frames, labels = next(iter(trainloader))
+        captions, frames, labels = convert_device(captions, device), convert_device(frames, device), labels.to(device)
+    
         # optimizer condition
         opt_cond = (step + 1) % args.accumulation_steps == 0
 
         if opt_cond or step == 0:
             data_time_m.update(time.time() - end)
-        
-        captions, frames, labels = convert_device(captions, device), convert_device(frames, device), labels.to(device)
 
         # predict
-        loss = model(captions=captions, frames=frames, labels=labels, return_loss=True)
+        loss = model(captions=captions, frames=frames, labels=labels, return_loss=True).mean()
+        
         # loss for accumulation steps
         loss /= args.accumulation_steps        
         loss.backward()
@@ -102,12 +102,13 @@ def validation(model, dataloader, log_interval, device='cpu'):
     
     model.eval()
     with torch.no_grad():
-        for idx, inputs in enumerate(dataloader):
-            _, captions, frames, labels = agg_inputs_to_batch(inputs)
+        for idx, (_, captions, frames, labels) in enumerate(dataloader):
+            if idx == 5:
+                break
             captions, frames, labels = convert_device(captions, device), convert_device(frames, device), labels.to(device)
             
             # predict
-            loss = model(captions=captions, frames=frames, labels=labels, return_loss=True)
+            loss = model(captions=captions, frames=frames, labels=labels, return_loss=True).mean()
         
             # total loss and acc
             total_loss += loss.item()

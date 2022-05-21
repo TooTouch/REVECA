@@ -250,6 +250,7 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         self.to_logits[-1].weight = nn.Parameter(self.unimodal_decoder.wte.weight[:-1,:])
 
     def forward(self, captions, frames=None, frames_embed=None, labels=None, return_loss=False, **kwargs):
+
         # unimodal decoding
         captions_cls_embed, captions_embed = self.embed_captions(captions, cls_return=return_loss)
 
@@ -315,14 +316,14 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         frames_embed_list.append(frames_embed)
 
         # before boundary
-        for f in frames['before']:
-            cls_embed, frames_embed = self.embed_frame(f)
+        for i in range(frames['before'].shape[1]):
+            cls_embed, frames_embed = self.embed_frame(frames['before'][:,i,:,:])
             cls_embed_list.append(cls_embed)
             frames_embed_list.append(frames_embed)
 
         # before boundary
-        for f in frames['after']:
-            cls_embed, frames_embed = self.embed_frame(f)
+        for i in range(frames['after'].shape[1]):
+            cls_embed, frames_embed = self.embed_frame(frames['after'][:,i,:,:])
             cls_embed_list.append(cls_embed)
             frames_embed_list.append(frames_embed)
 
