@@ -352,7 +352,7 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         contrastive_loss = (ce(sim, contrastive_labels) + ce(sim.t(), contrastive_labels)) * 0.5
         contrastive_loss = contrastive_loss * self.contrastive_loss_weight
 
-        return caption_loss + contrastive_loss
+        return caption_loss, contrastive_loss
 
 
     def get_encoder(self):

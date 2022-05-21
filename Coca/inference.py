@@ -3,7 +3,7 @@ import numpy as np
 import os 
 import json
 from metrics.evaluation_utils import split_gt_parts, split_pred_parts, evaluate_on_caption
-from utils import convert_device, agg_inputs_to_batch
+from utils import convert_device
 from tqdm.auto import tqdm
 
 import logging
@@ -14,11 +14,10 @@ def infer(args, model, tokenizer, dataloader):
 
     model.eval()
     with torch.no_grad():
-        for idx, (boundary_ids, frames) in enumerate(tqdm(dataloader)):
-            if idx==5:
-                break
+        for idx, inputs in enumerate(tqdm(dataloader)):
+            boundary_ids, frames = inputs
             frames = convert_device(frames, args.device)
-            
+        
             # predict
             output = model.generate(
                 frames, 
@@ -27,7 +26,7 @@ def infer(args, model, tokenizer, dataloader):
                 num_beams              = args.num_beams, 
                 top_k                  = args.top_k,
                 top_p                  = args.top_p
-            )
+            )   
     
             pred_caps = tokenizer.batch_decode(output)
             pred_dict.update(dict(zip(boundary_ids, pred_caps)))

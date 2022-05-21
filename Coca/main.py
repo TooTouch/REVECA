@@ -64,7 +64,7 @@ def get_args(notebook=False):
 
     # learning rate
     parser.add_argument('--lr', type=float, default=5e-4, help='learning rate')
-    parser.add_argument('--num_warmup_steps', type=int, default=5, help='warmup rate')
+    parser.add_argument('--num_warmup_steps', type=int, default=200, help='warmup rate')
 
     # generation
     parser.add_argument('--checkpoint_path', type=str, help='checkpoint path')
@@ -147,12 +147,12 @@ if __name__ == '__main__':
         testloader = create_dataloader(args, 'val' if args.do_val else 'test', tokenizer, test_mode=True)
         pred_dict = infer(args, model, tokenizer, testloader)
         
-        filename = f'pred_beam{args.num_beams}'
+        filename = f'pred_beam{args.num_beams}_'
         filename += 'val' if args.do_val else 'test'
         savepath = os.path.join(args.savedir, args.exp_name, filename)
 
         # save predict
-        with open(savepath + f'.json','w') as fp:
+        with open(f'{savepath}.json','w') as fp:
             json.dump(pred_dict, fp, indent=4)
 
         if args.do_val:

@@ -8,7 +8,7 @@ from collections import OrderedDict
 
 import torch
 
-from utils import convert_device, agg_inputs_to_batch
+from utils import convert_device
 
 _logger = logging.getLogger('train')
 
@@ -37,6 +37,8 @@ def training(
     step_time_m = AverageMeter()
     data_time_m = AverageMeter()
     losses_m = AverageMeter()
+    caption_losses_m = AverageMeter()
+    contrastive_losses_m = AverageMeter()
     
     end = time.time()
     
@@ -53,8 +55,9 @@ def training(
             data_time_m.update(time.time() - end)
 
         # predict
-        loss = model(captions=captions, frames=frames, labels=labels, return_loss=True).mean()
-        
+        caption_loss, contrastive_loss = model(captions=captions, frames=frames, labels=labels, return_loss=True)
+        loss = (caption_loss + contrastive_loss).mean()
+
         # loss for accumulation steps
         loss /= args.accumulation_steps        
         loss.backward()
@@ -67,19 +70,37 @@ def training(
             scheduler.step()
 
             losses_m.update(loss.item()*args.accumulation_steps)
+            caption_losses_m.update(caption_loss.mean().item()*args.accumulation_steps)
+            contrastive_losses_m.update(contrastive_loss.mean().item()*args.accumulation_steps)
             
             step_time_m.update(time.time() - end)
         
             if ((step + 1) // args.accumulation_steps) % args.log_interval == 0 or step == 0: 
-                _logger.info('TRAIN [{:>4d}/{}] Loss: {loss.val:>6.4f} ({loss.avg:>6.4f}) '
+                _logger.info('TRAIN [{:>4d}/{}] '
+                        'Loss: {loss.val:>6.4f} ({loss.avg:>6.4f}) '
+                        'Caption Loss: {caption_loss.val:>6.4f} ({caption_loss.avg:>6.4f}) '
+                        'Contrastive Loss: {contrastive_loss.val:>6.4f} ({contrastive_loss.avg:>6.4f}) '
                         'LR: {lr:.3e} '
                         'Time: {step_time.val:.3f}s ({step_time.avg:.3f}s) '
                         'Data: {data_time.val:.3f} ({data_time.avg:.3f})'.format(
                         (step+1)//args.accumulation_steps, args.num_training_steps//args.accumulation_steps, 
-                        loss       = losses_m, 
-                        lr         = optimizer.param_groups[0]['lr'],
-                        step_time  = step_time_m,
-                        data_time  = data_time_m))
+                        loss             = losses_m, 
+                        caption_loss     = caption_losses_m,
+                        contrastive_loss = contrastive_losses_m,
+                        lr               = optimizer.param_groups[0]['lr'],
+                        step_time        = step_time_m,
+                        data_time        = data_time_m))
+
+                if args.wandb:
+                    # wandb
+                    metrics = OrderedDict(steps=step)
+                    metrics.update([
+                        ('train_loss', losses_m.avg),
+                        ('train_caption_loss', caption_losses_m.avg),
+                        ('train_constrastive_loss', contrastive_losses_m.avg),
+                        ('lr',optimizer.param_groups[0]['lr'])
+                    ])
+                    wandb.log(metrics)
 
         end = time.time()
 
@@ -91,25 +112,29 @@ def training(
             if args.wandb:
                 # wandb
                 metrics = OrderedDict(steps=step)
-                metrics.update([('train_loss', losses_m.avg)])
-                metrics.update([('val_loss', eval_metrics['loss'])])
+                metrics.update([
+                    ('val_loss', eval_metrics['loss']),
+                    ('val_caption_loss', eval_metrics['caption_loss']),
+                    ('val_constrastive_loss', eval_metrics['constrastive_loss'])
+                ])
                 wandb.log(metrics)
 
 
 
 def validation(model, dataloader, log_interval, device='cpu'):
     total_loss = 0
-    
+    caption_loss = 0
+    contrastive_loss = 0
+
     model.eval()
     with torch.no_grad():
         for idx, (_, captions, frames, labels) in enumerate(dataloader):
-            if idx == 5:
-                break
             captions, frames, labels = convert_device(captions, device), convert_device(frames, device), labels.to(device)
             
             # predict
-            loss = model(captions=captions, frames=frames, labels=labels, return_loss=True).mean()
-        
+            caption_loss, contrastive_loss = model(captions=captions, frames=frames, labels=labels, return_loss=True)
+            loss = (caption_loss + contrastive_loss).mean()
+
             # total loss and acc
             total_loss += loss.item()
             
@@ -117,7 +142,11 @@ def validation(model, dataloader, log_interval, device='cpu'):
                 _logger.info('TEST [%d/%d]: Loss: %.3f' % 
                             (idx+1, len(dataloader), total_loss/(idx+1)))
                 
-    return OrderedDict([('loss',total_loss/len(dataloader))])
+    return OrderedDict([
+            ('loss',total_loss/len(dataloader)),
+            ('caption_loss',caption_loss/len(dataloader)),
+            ('contrastive_loss',contrastive_loss/len(dataloader))
+        ])
 
 
 
