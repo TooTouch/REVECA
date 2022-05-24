@@ -115,7 +115,7 @@ def training(
                 metrics.update([
                     ('val_loss', eval_metrics['loss']),
                     ('val_caption_loss', eval_metrics['caption_loss']),
-                    ('val_constrastive_loss', eval_metrics['constrastive_loss'])
+                    ('val_contrastive_loss', eval_metrics['contrastive_loss'])
                 ])
                 wandb.log(metrics)
 
@@ -144,8 +144,8 @@ def validation(model, dataloader, log_interval, device='cpu'):
                 
     return OrderedDict([
             ('loss',total_loss/len(dataloader)),
-            ('caption_loss',caption_loss/len(dataloader)),
-            ('contrastive_loss',contrastive_loss/len(dataloader))
+            ('caption_loss',caption_loss.mean()/len(dataloader)),
+            ('contrastive_loss',contrastive_loss.mean()/len(dataloader))
         ])
 
 

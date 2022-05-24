@@ -204,7 +204,7 @@ class CaptionExtraction:
             input_ids += (eos_id * pad_length) 
             attention_mask += ([0] * pad_length)
 
-            label_ids += (eos_id * pad_length)
+            label_ids += ([-100] * pad_length)
 
         elif len(input_ids) > self.max_token_length:
             input_ids = input_ids[:self.max_token_length-1] + eos_id

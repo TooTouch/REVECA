@@ -341,7 +341,7 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
 
         # calculate caption loss (cross entropy loss)
         pred_captions = rearrange(pred_captions, 'b n c -> b c n')
-        caption_loss = ce(pred_captions, true_captions, ignore_index=self.pad_id)
+        caption_loss = ce(pred_captions, true_captions)
         caption_loss = caption_loss * self.caption_loss_weight
 
         # calculate contrastive loss
