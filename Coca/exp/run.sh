@@ -1,4 +1,6 @@
-python main.py --exp_name 'VideoBoundaryCoCa' --do_train \
+cd ..
+
+python main.py --exp_name 'VideoBoundaryCoCa_0523' --do_train \
                     --image_modelname vit_huge_patch14_224_in21k \
                     --batch_size 16 \
                     --num_training_steps 10000 \

@@ -95,9 +95,9 @@ def training(
                     # wandb
                     metrics = OrderedDict(steps=step)
                     metrics.update([
-                        ('train_loss', losses_m.avg),
-                        ('train_caption_loss', caption_losses_m.avg),
-                        ('train_constrastive_loss', contrastive_losses_m.avg),
+                        ('train_loss', losses_m.val),
+                        ('train_caption_loss', caption_losses_m.val),
+                        ('train_constrastive_loss', contrastive_losses_m.val),
                         ('lr',optimizer.param_groups[0]['lr'])
                     ])
                     wandb.log(metrics)
@@ -123,29 +123,39 @@ def training(
 
 def validation(model, dataloader, log_interval, device='cpu'):
     total_loss = 0
-    caption_loss = 0
-    contrastive_loss = 0
+    total_caption_loss = 0
+    total_contrastive_loss = 0
 
     model.eval()
     with torch.no_grad():
         for idx, (_, captions, frames, labels) in enumerate(dataloader):
+            if idx == 5:
+                break
             captions, frames, labels = convert_device(captions, device), convert_device(frames, device), labels.to(device)
             
             # predict
             caption_loss, contrastive_loss = model(captions=captions, frames=frames, labels=labels, return_loss=True)
-            loss = (caption_loss + contrastive_loss).mean()
+            loss = (caption_loss + contrastive_loss)
 
             # total loss and acc
-            total_loss += loss.item()
+            total_loss += loss.mean().item()
+            total_caption_loss += caption_loss.mean().item()
+            total_contrastive_loss += contrastive_loss.mean().item()
             
-            if (idx + 1) % log_interval == 0 and idx != 0: 
-                _logger.info('TEST [%d/%d]: Loss: %.3f' % 
-                            (idx+1, len(dataloader), total_loss/(idx+1)))
+            if (idx + 1) % log_interval == 0 and idx == 0: 
+                _logger.info('TEST [%d/%d]: '
+                             'Loss: %.3f '
+                             'Contrastive Loss: %.3f ' 
+                             'Caption Loss: %.3f ' % 
+                            (idx+1, len(dataloader), 
+                            total_loss/(idx+1),
+                            total_contrastive_loss/(idx+1),
+                            total_caption_loss/(idx+1)))
                 
     return OrderedDict([
             ('loss',total_loss/len(dataloader)),
-            ('caption_loss',caption_loss.mean()/len(dataloader)),
-            ('contrastive_loss',contrastive_loss.mean()/len(dataloader))
+            ('caption_loss',total_caption_loss/len(dataloader)),
+            ('contrastive_loss',total_contrastive_loss/len(dataloader))
         ])
 
 

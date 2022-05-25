@@ -196,9 +196,12 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         image_encoder, 
         unimodal_decoder, 
         multimodal_decoder,
+        aggregation_frames_method,
         caption_loss_weight,
         contrastive_loss_weight,
         num_img_queries = 256,
+        use_frame_position = False,
+        num_frames = 21,
         heads = 8,
         pad_id = None,
         device = 'cpu'
@@ -213,10 +216,17 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         self.config.is_encoder_decoder = True
         self.main_input_name = 'frames'
 
+        # use frame position
+        self.use_frame_position = use_frame_position
+        self.num_frames = num_frames
+
         # models
         self.image_encoder = image_encoder
         self.unimodal_decoder = unimodal_decoder 
         self.multimodal_decoder = multimodal_decoder 
+
+        # aggregation frame method
+        self.aggregation_frames_method = aggregation_frames_method
 
         freeze_model_and_make_eval_(self.image_encoder)
 
@@ -229,10 +239,17 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
 
         # attention pooling for image tokens
         dim = self.unimodal_decoder.config.n_embd
-        image_dim = self.image_encoder.embed_dim
+        image_dim = self.image_encoder.embed_dim 
+        image_dim = image_dim if not self.use_frame_position else image_dim + 1
         dim_head = image_dim // heads
         self.img_queries = nn.Parameter(torch.randn(num_img_queries + 1, dim)) # num image queries for multimodal, but 1 extra CLS for contrastive learning
-        self.img_attn_pool = CrossAttention(dim=dim, context_dim=image_dim, dim_head=dim_head, heads=heads, norm_context=True)
+        self.img_attn_pool = CrossAttention(
+            dim          = dim, 
+            context_dim  = image_dim, 
+            dim_head     = dim_head, 
+            heads        = heads, 
+            norm_context = True
+        )
 
         self.img_attn_pool_norm = LayerNorm(dim)
         self.cls_norm = LayerNorm(dim)
@@ -293,10 +310,13 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
             return None, unimodal_output['last_hidden_state']
 
 
-    def embed_frame(self, frame):    
+    def embed_frame(self, frame, pos_idx):    
         self.image_encoder.eval()
         with torch.no_grad():
             image_tokens = self.image_encoder.forward_features(frame).detach()
+
+        if self.use_frame_position:
+            image_tokens = self.add_frame_position(image_tokens, pos_idx)
 
         # attention pool image tokens
         img_queries = repeat(self.img_queries, 'n d -> b n d', b=image_tokens.shape[0])
@@ -307,32 +327,58 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
 
 
     def aggregation_frames(self, frames):
-        cls_embed_list = []
+        """
+        cls_embed: (batch, dim)
+        frames_embed: (batch, n_query, dim)
+        """
+        cls_embed_list = [] 
         frames_embed_list = []
-
-        # boundary
-        cls_embed, frames_embed = self.embed_frame(frames['boundary'])
-        cls_embed_list.append(cls_embed)
-        frames_embed_list.append(frames_embed)
+        pos_idx = 0
 
         # before boundary
         for i in range(frames['before'].shape[1]):
-            cls_embed, frames_embed = self.embed_frame(frames['before'][:,i,:,:])
+            cls_embed, frames_embed = self.embed_frame(frames['before'][:,i,:,:], pos_idx)
             cls_embed_list.append(cls_embed)
             frames_embed_list.append(frames_embed)
+            pos_idx += 1
+
+        # boundary
+        cls_embed, frames_embed = self.embed_frame(frames['boundary'], pos_idx)
+        cls_embed_list.append(cls_embed)
+        frames_embed_list.append(frames_embed)
+        pos_idx += 1
 
         # before boundary
         for i in range(frames['after'].shape[1]):
-            cls_embed, frames_embed = self.embed_frame(frames['after'][:,i,:,:])
+            cls_embed, frames_embed = self.embed_frame(frames['after'][:,i,:,:], pos_idx)
             cls_embed_list.append(cls_embed)
             frames_embed_list.append(frames_embed)
+            pos_idx += 1
 
         # aggregation
         cls_embed = torch.stack(cls_embed_list).mean(dim=0)
+
+        return cls_embed, getattr(self, self.aggregation_frames_method)(frames_embed_list)                
+
+    def aggregation_frames_method1(self, frames_embed_list):
         frames_embed = torch.stack(frames_embed_list).mean(dim=0) 
+        
+        return frames_embed
 
-        return cls_embed, frames_embed
+    def aggregation_frames_method2(self, frames_embed_list):   
+        frames_embed = torch.cat(frames_embed_list, dim=1) 
+        
+        return frames_embed
 
+    def add_frame_position(self, frames_embed, pos_idx):
+        batch_size, num_tokens, _ = frames_embed.size()
+        device = frames_embed.device 
+
+        pos = torch.zeros((batch_size, num_tokens, 1)).to(device)
+        pos -= 2 * (1 - pos_idx/(self.num_frames -1)) - 1
+        frames_embed = torch.cat([frames_embed, pos], dim=-1)
+
+        return frames_embed
 
     def calc_loss(self, captions_cls_embed, frame_cls_embed, pred_captions, true_captions):
         batch, device = captions_cls_embed.shape[0], captions_cls_embed.device
@@ -413,16 +459,19 @@ def create_model(args, tokenizer):
     multimodal_decoder = MultiModalDecoder.from_pretrained(args.unimodal_modelname, config=config)
 
     model = VideoBoudnaryCoCa(
-        num_tokens              = len(tokenizer)-1, 
-        image_encoder           = image_encoder, 
-        unimodal_decoder        = unimodal_decoder, 
-        multimodal_decoder      = multimodal_decoder,
-        caption_loss_weight     = args.caption_loss_weight,
-        contrastive_loss_weight = args.contrastive_loss_weight,
-        num_img_queries         = args.num_img_queries,
-        heads                   = args.num_heads,
-        pad_id                  = tokenizer.encode(tokenizer.eos_token)[0],
-        device                  = args.device
+        num_tokens                = len(tokenizer)-1, 
+        image_encoder             = image_encoder, 
+        unimodal_decoder          = unimodal_decoder, 
+        multimodal_decoder        = multimodal_decoder,
+        aggregation_frames_method = args.aggregation_frames_method,
+        caption_loss_weight       = args.caption_loss_weight,
+        contrastive_loss_weight   = args.contrastive_loss_weight,
+        num_img_queries           = args.num_img_queries,
+        use_frame_position        = args.use_frame_position,
+        num_frames                = 2 * args.max_sample_num + 1,
+        heads                     = args.num_heads,
+        pad_id                    = tokenizer.encode(tokenizer.eos_token)[0],
+        device                    = args.device
     )
 
     return model

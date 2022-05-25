@@ -39,10 +39,10 @@ def get_args(notebook=False):
     # model
     parser.add_argument(
         '--image_modelname',
-        type=str, 
-        default='vit_huge_patch14_224_in21k', 
-        choices=['vit_base_patch16_224', 'vit_huge_patch14_224_in21k'], 
-        help='image model name'
+        type    = str, 
+        default = 'vit_huge_patch14_224_in21k', 
+        choices = ['vit_base_patch16_224', 'vit_huge_patch14_224_in21k'], 
+        help    = 'image model name'
     )
     parser.add_argument('--unimodal_modelname', type=str, default='gpt2', choices=['gpt2'], help='unimodal model name')
     parser.add_argument('--multimodal_modelname', type=str, default='gpt2', choices=['gpt2'], help='multimodal model name')
@@ -51,6 +51,14 @@ def get_args(notebook=False):
     parser.add_argument('--contrastive_loss_weight', type=float, default=1.,help='contrastive loss weight')
     parser.add_argument('--num_img_queries', type=int, default=256 ,help='number of image queries')
     parser.add_argument('--num_heads', type=int, default=8, help='number of attentional pooling heads')
+    parser.add_argument(
+        '--aggregation_frames_method', 
+        type    = str, 
+        default = 'aggregation_frames_method1', 
+        choices = ['aggregation_frames_method1','aggregation_frames_method2'], 
+        help    = 'select aggregation frames method'
+    )
+    parser.add_argument('--use_frame_position', action='store_true', help='use frame position')
 
     # training
     parser.add_argument('--seed', type=int, default=223, help='my birthday')
