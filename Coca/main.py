@@ -84,6 +84,12 @@ def get_args(notebook=False):
     parser.add_argument('--top_k', type=int, default=None, help='top k generation')
     parser.add_argument('--top_p', type=int, default=None, help='top p generation')
 
+    # LoRA
+    parser.add_argument('--use_lora', action='store_true', help='use LoRA')
+    parser.add_argument('--lora_r', type=int, default=8, help='LoRA rank')
+    parser.add_argument('--lora_alpha', type=int, default=8, help='LoRA alpha')
+    parser.add_argument('--lora_dropout', type=float, default=0.1, help='LoRA dropout')
+    parser.add_argument('--merge_weights', action='store_true', default=False, help='LoRA merge weights')
 
     if notebook:
         args = parser.parse_args(args=[])

@@ -16,7 +16,7 @@ def infer(args, model, tokenizer, dataloader):
     with torch.no_grad():
         for idx, inputs in enumerate(tqdm(dataloader)):
             boundary_ids, frames, seg_features, tsn_features = inputs
-            frames, seg_features, tsn_features = convert_device(frames, device), convert_device(seg_features, device), convert_device(tsn_features, device)
+            frames, seg_features, tsn_features = convert_device(frames, args.device), convert_device(seg_features, args.device), convert_device(tsn_features, args.device)
         
             inputs = {
                 'frames'       : frames,

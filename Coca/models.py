@@ -8,6 +8,12 @@ from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttenti
 from timm import create_model as timm_create_model
 from timm.models.layers import PatchEmbed
 from utils import accuracy
+import loralib as lora
+
+import math
+import logging
+
+_logger = logging.getLogger('train')
 
 def exists(val):
     return val is not None
@@ -181,7 +187,6 @@ class MultiModalDecoder(GPT2Model):
             if use_cache is True:
                 presents = presents + (present,)
 
-
         hidden_states = self.ln_f(hidden_states)
         hidden_states = hidden_states.view(*output_shape)
     
@@ -317,9 +322,9 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
 
         logits = self.to_logits(output['last_hidden_state'])
 
-        acc1, acc5 = accuracy(logits, labels)
-        caption_loss, contrastive_loss = self.calc_loss(captions_cls_embed, frames_cls_embed, logits, labels)
         if return_loss:
+            acc1, acc5 = accuracy(logits, labels)
+            caption_loss, contrastive_loss = self.calc_loss(captions_cls_embed, frames_cls_embed, logits, labels)
             return acc1, acc5, caption_loss, contrastive_loss
 
         else:
@@ -567,14 +572,177 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         return input_ids, model_kwargs
 
 
+class Conv1D(nn.Module):
+    """
+    1D-convolutional layer as defined by Radford et al. for OpenAI GPT (and also used in GPT-2).
+    Basically works like a linear layer but the weights are transposed.
+    Args:
+        nf (`int`): The number of output features.
+        nx (`int`): The number of input features.
+    """
+
+    def __init__(self, nf, nx):
+        super().__init__()
+        self.nf = nf
+        w = torch.empty(nx, nf)
+        nn.init.normal_(w, std=0.02)
+        self.weight = nn.Parameter(w)
+        self.bias = nn.Parameter(torch.zeros(nf))
+
+    def forward(self, x):
+        size_out = x.size()[:-1] + (self.nf,)
+        x = torch.addmm(self.bias, x.view(-1, x.size(-1)), self.weight)
+        x = x.view(size_out)
+        return x
+
+
+class Conv1D_LoRA(Conv1D, lora.LoRALayer):
+    # LoRA implemented in a dense layer
+    def __init__(
+        self, 
+        in_channels: int, 
+        out_channels: int,
+        r: int = 0, 
+        lora_alpha: int = 1, 
+        lora_dropout: float = 0.,
+        merge_weights: bool = True,
+        **kwargs
+    ):
+        Conv1D.__init__(self, out_channels, in_channels, **kwargs)
+        lora.LoRALayer.__init__(self, r=r, lora_alpha=lora_alpha, lora_dropout=lora_dropout,
+                           merge_weights=merge_weights)
+
+        # Actual trainable parameters
+        if r > 0:
+            self.lora_A = nn.Parameter(
+                self.weight.new_zeros((r, in_channels))
+            )
+            self.lora_B = nn.Parameter(
+                self.weight.new_zeros((out_channels, r))
+            )
+            self.scaling = self.lora_alpha / self.r
+            # Freezing the pre-trained weight matrix
+            self.weight.requires_grad = False
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        if hasattr(self, 'lora_A'):
+            # initialize A the same way as the default for nn.Linear and B to zero
+            nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+            nn.init.zeros_(self.lora_B)
+
+    def train(self, mode: bool = True):
+        Conv1D.train(self, mode)
+        if self.merge_weights and self.merged:
+            # Make sure that the weights are not merged
+            self.weight.data -= (self.lora_B @ self.lora_A).view(self.weight.shape) * self.scaling
+            self.merged = False
+    
+    def eval(self):
+        Conv1D.eval(self)
+        if self.merge_weights and not self.merged:
+            # Merge the weights and mark it
+            self.weight.data += (self.lora_B @ self.lora_A).view(self.weight.shape) * self.scaling
+            self.merged = True
+
+    def forward(self, x: torch.Tensor):
+        if self.r > 0 and not self.merged:
+            return F.Conv1d(
+                x, 
+                self.weight + (self.lora_B @ self.lora_A).view(self.weight.shape) * self.scaling,
+                self.bias, self.stride, self.padding, self.dilation, self.groups
+            )
+        return Conv1D.forward(self, x)
+
+
+def set_lora(args, model):
+    for layer in model.h:
+        layer.attn.c_attn = Conv1D_LoRA(
+            model.config.n_embd, model.config.n_embd * 3, 
+            r               =   args.lora_r, 
+            lora_alpha      =   args.lora_alpha, 
+            lora_dropout    =   args.lora_dropout, 
+            merge_weights   =   args.merge_weights,
+        )
+        
+        if model.config.add_cross_attention:
+            layer.crossattention.c_attn = Conv1D_LoRA(
+                model.config.n_embd, model.config.n_embd * 2, 
+                r               =   args.lora_r, 
+                lora_alpha      =   args.lora_alpha, 
+                lora_dropout    =   args.lora_dropout, 
+                merge_weights   =   args.merge_weights,
+            )
+
+            layer.crossattention.q_attn = Conv1D_LoRA(
+                model.config.n_embd, model.config.n_embd, 
+                r               =   args.lora_r, 
+                lora_alpha      =   args.lora_alpha, 
+                lora_dropout    =   args.lora_dropout, 
+                merge_weights   =   args.merge_weights,
+            )  
+        
+    return model
+
+def calc_params(model):
+    param = 0
+    for p in model.parameters():
+        if p.requires_grad:
+            param += p.numel()
+
+    return param
+
 def create_model(args, tokenizer):
+    # image encoder
     image_encoder = timm_create_model(args.image_modelname, pretrained=True, img_size=args.img_size)
-    unimodal_decoder = GPT2Model.from_pretrained(args.unimodal_modelname)
+
+    # unimodal decoder
+    if args.use_lora:
+        config = GPT2Config.from_pretrained(args.unimodal_modelname)
+        unimodal_decoder = GPT2Model(config=config)
+        unimodal_decoder = set_lora(args, unimodal_decoder)
+        unimodal_decoder.load_state_dict(
+            GPT2Model.from_pretrained(args.unimodal_modelname, config=config).state_dict(), 
+            strict=False
+        )
+
+        _logger.info('Build a Unimodal Decoder with LoRA')
+        before_param = calc_params(unimodal_decoder)
+
+        # set lora grad
+        lora.mark_only_lora_as_trainable(unimodal_decoder)
+
+        after_param = calc_params(unimodal_decoder)
+        _logger.info('Trainable parameters of a Unimodal Decoder change {} to {}'.format(before_param, after_param))
+
+        
+    else:
+        unimodal_decoder = GPT2Model.from_pretrained(args.unimodal_modelname)
     unimodal_decoder.resize_token_embeddings(len(tokenizer))
 
+    # multimodal decoder
     config = GPT2Config.from_pretrained(args.multimodal_modelname)
     config.add_cross_attention = True
-    multimodal_decoder = MultiModalDecoder.from_pretrained(args.multimodal_modelname, config=config)
+    if args.use_lora:
+        multimodal_decoder = MultiModalDecoder(config=config)
+        multimodal_decoder = set_lora(args, multimodal_decoder)
+        multimodal_decoder.load_state_dict(
+            GPT2Model.from_pretrained(args.multimodal_modelname, config=config).state_dict(), 
+            strict=False
+        )
+
+        _logger.info('Build a Unimodal Decoder with LoRA')
+        before_param = calc_params(multimodal_decoder)
+
+        # set lora grad
+        lora.mark_only_lora_as_trainable(multimodal_decoder)
+
+        after_param = calc_params(unimodal_decoder)
+        _logger.info('Trainable parameters of a Multimodal Decoder change {} to {}'.format(before_param, after_param))
+
+    else:
+        multimodal_decoder = MultiModalDecoder.from_pretrained(args.multimodal_modelname, config=config)
+
 
     model = VideoBoudnaryCoCa(
         num_tokens                       = len(tokenizer)-1, 
