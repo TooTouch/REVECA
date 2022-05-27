@@ -36,6 +36,8 @@ def training(
 ):   
     step_time_m = AverageMeter()
     data_time_m = AverageMeter()
+    acc1_m = AverageMeter()
+    acc5_m = AverageMeter()
     losses_m = AverageMeter()
     caption_losses_m = AverageMeter()
     contrastive_losses_m = AverageMeter()
@@ -45,9 +47,10 @@ def training(
     model.train()
     optimizer.zero_grad()
     for step in range(args.num_training_steps):    
-        _, captions, frames, labels = next(iter(trainloader))
-        captions, frames, labels = convert_device(captions, device), convert_device(frames, device), labels.to(device)
-    
+        _, captions, frames, seg_features, tsn_features, labels = next(iter(trainloader))
+        captions, labels = convert_device(captions, device), labels.to(device)
+        frames, seg_features, tsn_features = convert_device(frames, device), convert_device(seg_features, device), convert_device(tsn_features, device)
+
         # optimizer condition
         opt_cond = (step + 1) % args.accumulation_steps == 0
 
@@ -55,7 +58,15 @@ def training(
             data_time_m.update(time.time() - end)
 
         # predict
-        caption_loss, contrastive_loss = model(captions=captions, frames=frames, labels=labels, return_loss=True)
+        acc1, acc5, caption_loss, contrastive_loss = model(
+            captions     = captions, 
+            frames       = frames, 
+            seg_features = seg_features, 
+            tsn_features = tsn_features,
+            labels       = labels, 
+            return_loss   = True
+        )
+
         loss = (caption_loss + contrastive_loss).mean()
 
         # loss for accumulation steps
@@ -69,6 +80,8 @@ def training(
             
             scheduler.step()
 
+            acc1_m.update(acc1.mean().item())
+            acc5_m.update(acc5.mean().item())
             losses_m.update(loss.item()*args.accumulation_steps)
             caption_losses_m.update(caption_loss.mean().item()*args.accumulation_steps)
             contrastive_losses_m.update(contrastive_loss.mean().item()*args.accumulation_steps)
@@ -77,6 +90,8 @@ def training(
         
             if ((step + 1) // args.accumulation_steps) % args.log_interval == 0 or step == 0: 
                 _logger.info('TRAIN [{:>4d}/{}] '
+                        'Acc@1: {acc1.val:>6.2%} ({acc1.avg:>6.2%}) '
+                        'Acc@5: {acc5.val:>6.2%} ({acc5.avg:>6.2%}) '
                         'Loss: {loss.val:>6.4f} ({loss.avg:>6.4f}) '
                         'Caption Loss: {caption_loss.val:>6.4f} ({caption_loss.avg:>6.4f}) '
                         'Contrastive Loss: {contrastive_loss.val:>6.4f} ({contrastive_loss.avg:>6.4f}) '
@@ -84,6 +99,8 @@ def training(
                         'Time: {step_time.val:.3f}s ({step_time.avg:.3f}s) '
                         'Data: {data_time.val:.3f} ({data_time.avg:.3f})'.format(
                         (step+1)//args.accumulation_steps, args.num_training_steps//args.accumulation_steps, 
+                        acc1             = acc1_m,
+                        acc5             = acc5_m,
                         loss             = losses_m, 
                         caption_loss     = caption_losses_m,
                         contrastive_loss = contrastive_losses_m,
@@ -95,6 +112,8 @@ def training(
                     # wandb
                     metrics = OrderedDict(steps=step)
                     metrics.update([
+                        ('train_acc1', acc1_m.val),
+                        ('train_acc5', acc5_m.val),
                         ('train_loss', losses_m.val),
                         ('train_caption_loss', caption_losses_m.val),
                         ('train_constrastive_loss', contrastive_losses_m.val),
@@ -113,6 +132,8 @@ def training(
                 # wandb
                 metrics = OrderedDict(steps=step)
                 metrics.update([
+                    ('val_acc1', eval_metrics['acc1']),
+                    ('val_acc5', eval_metrics['acc5']),
                     ('val_loss', eval_metrics['loss']),
                     ('val_caption_loss', eval_metrics['caption_loss']),
                     ('val_contrastive_loss', eval_metrics['contrastive_loss'])
@@ -122,37 +143,57 @@ def training(
 
 
 def validation(model, dataloader, log_interval, device='cpu'):
+    total_acc1 = 0
+    total_acc5 = 0
     total_loss = 0
     total_caption_loss = 0
     total_contrastive_loss = 0
 
     model.eval()
     with torch.no_grad():
-        for idx, (_, captions, frames, labels) in enumerate(dataloader):
-            if idx == 5:
-                break
-            captions, frames, labels = convert_device(captions, device), convert_device(frames, device), labels.to(device)
+        for idx, (_, captions, frames, seg_features, tsn_features, labels) in enumerate(dataloader):
+            captions, labels = convert_device(captions, device), labels.to(device)
+            frames, seg_features, tsn_features = convert_device(frames, device), convert_device(seg_features, device), convert_device(tsn_features, device)
             
             # predict
-            caption_loss, contrastive_loss = model(captions=captions, frames=frames, labels=labels, return_loss=True)
+            acc1, acc5, caption_loss, contrastive_loss = model(
+                captions     = captions, 
+                frames       = frames, 
+                seg_features = seg_features, 
+                tsn_features = tsn_features,
+                labels       = labels, 
+                return_loss   = True
+            )
+            
             loss = (caption_loss + contrastive_loss)
 
             # total loss and acc
+            total_acc1 += acc1.mean().item()
+            total_acc5 += acc5.mean().item()
             total_loss += loss.mean().item()
             total_caption_loss += caption_loss.mean().item()
             total_contrastive_loss += contrastive_loss.mean().item()
             
-            if (idx + 1) % log_interval == 0 and idx == 0: 
-                _logger.info('TEST [%d/%d]: '
-                             'Loss: %.3f '
-                             'Contrastive Loss: %.3f ' 
-                             'Caption Loss: %.3f ' % 
-                            (idx+1, len(dataloader), 
-                            total_loss/(idx+1),
-                            total_contrastive_loss/(idx+1),
-                            total_caption_loss/(idx+1)))
+            if (idx + 1) % log_interval == 0 or idx == 0: 
+                _logger.info('TEST [{idx:d}/{total:d}]: '
+                             'Acc@1: {acc1:.2%} '
+                             'Acc@5: {acc5:.2%} '
+                             'Loss: {loss:.3f} '
+                             'Contrastive Loss: {contrastive_loss:.3f} ' 
+                             'Caption Loss: {caption_loss:.3f} '.format(
+                                idx              = idx+1,
+                                total            = len(dataloader),
+                                acc1             = total_acc1/(idx+1),
+                                acc5             = total_acc5/(idx+1),
+                                loss             = total_loss/(idx+1),
+                                contrastive_loss = total_contrastive_loss/(idx+1),
+                                caption_loss     = total_caption_loss/(idx+1)
+                             ))
+                            
                 
     return OrderedDict([
+            ('acc1',total_acc1/len(dataloader)),
+            ('acc5',total_acc5/len(dataloader)),
             ('loss',total_loss/len(dataloader)),
             ('caption_loss',total_caption_loss/len(dataloader)),
             ('contrastive_loss',total_contrastive_loss/len(dataloader))

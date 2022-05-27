@@ -4,6 +4,7 @@ import json
 from glob import glob 
 import pandas as pd
 import cv2
+import h5py
 import numpy as np
 from einops import repeat
 import torch
@@ -31,7 +32,7 @@ class VideoExtraction:
         self.video_info['video_id'] = self.video_info['video_path'].apply(lambda x: x.split('/')[-1][:11])
         self.transform = transform
         
-    def get_frames(self, video_id, timestamps):
+    def _get_frames(self, video_id, timestamps):
         video_path = self.video_info[self.video_info['video_id']==video_id]['video_path'].values[0]
         # read video
         cap = cv2.VideoCapture(video_path)
@@ -224,7 +225,7 @@ class CaptionExtraction:
 
 
 class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
-    def __init__(self, args, split, tokenizer, transform=None, use_saved_frame=True, test_mode=False):
+    def __init__(self, args, split, tokenizer, transform=None, test_mode=False):
         super(BoundaryCaptioningDataset).__init__()
         VideoExtraction.__init__(self, args, split, transform)
         CaptionExtraction.__init__(self, args, tokenizer)
@@ -243,7 +244,14 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
 
         # read saved frames
         self.datadir = args.datadir
-        self.use_saved_frame = use_saved_frame
+        self.use_saved_frame = args.use_saved_frame
+
+        # read seg features
+        self.use_seg_features = args.use_seg_features
+        self.max_sample_num = args.max_sample_num
+
+        # read tsn features
+        self.use_tsn_features = args.use_tsn_features
 
         # make boundary list
         self.boundary_list = self.build_boundary_list()
@@ -252,26 +260,29 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
         return len(self.boundary_list)
 
     def __getitem__(self, idx):
+        # boundary info
         boundary = self.boundary_list[idx]
         boundary_id = boundary['boundary_id']
+        boundary_idx = int(boundary_id.split('_')[-1])
         video_id = boundary_id[:11]
 
+        # time stamps
         timestamps = [boundary['prev_timestamp'], boundary['timestamp'], boundary['next_timestamp']]
 
-        if self.use_saved_frame:
-            frames = torch.load(
-                os.path.join(self.datadir, 'frames', f'{self.split}/{boundary_id}.pt')
-            )[boundary_id]
-        else:
-            frames = self.get_frames(video_id, timestamps)
+        # frames info
+        frames = self.get_frames(video_id, boundary_id, timestamps)
+        seg_features = self.get_seg_features(boundary_id)
+        tsn_features = self.get_tsn_features(video_id, boundary_idx)
 
+        # train or test mode
         if not self.test_mode:
             caption = boundary['caption']        
             input_ids, label_ids, attention_mask = self.get_tokens(caption)
-            return boundary_id, {'input_ids':input_ids, 'attention_mask':attention_mask}, frames, label_ids
+
+            return boundary_id, {'input_ids':input_ids, 'attention_mask':attention_mask}, frames, seg_features, tsn_features, label_ids
             
         else:
-            return boundary_id, frames
+            return boundary_id, frames, seg_features, tsn_features
             
 
     def build_boundary_list(self):
@@ -286,6 +297,41 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
         for boundary in self.boundary_list:
             caption_dict[boundary['boundary_id']] = [boundary['caption']]
         return caption_dict
+
+    def get_frames(self, video_id, boundary_id, timestamps):
+        if self.use_saved_frame:
+            frames = torch.load(
+                os.path.join(self.datadir, 'frames', f'{self.split}/{boundary_id}.pt')
+            )[boundary_id]
+        else:
+            frames = self._get_frames(video_id, timestamps)
+
+        return frames
+
+    def get_seg_features(self, boundary_id):
+        seg_features = None
+
+        if self.use_seg_features:
+            seg_features = {}
+            saved_seg_features = torch.load(os.path.join(self.datadir, 'seg_features', f'{self.split}/{boundary_id}.pt'))
+            seg_features['before'] = saved_seg_features[:self.max_sample_num].to(torch.float).unsqueeze(1)
+            seg_features['boundary'] = saved_seg_features[self.max_sample_num].to(torch.float).unsqueeze(0)
+            seg_features['after'] = saved_seg_features[-self.max_sample_num:].to(torch.float).unsqueeze(1)    
+    
+        return seg_features
+
+    def get_tsn_features(self, video_id, boundary_idx):
+        tsn_features = None
+
+        if self.use_tsn_features:
+            filename = os.path.join(self.datadir, 'tsn_captioning_feature', f'{video_id}.hdf5')
+            with h5py.File(filename, 'r') as h5:
+                tsn_features = dict(
+                    before=h5[str(boundary_idx)][:],
+                    after=h5[str(boundary_idx + 1)][:]
+                )
+
+        return tsn_features
 
 
 def make_data_sampler(dataset, shuffle):
@@ -306,7 +352,7 @@ def create_dataloader(args, split, tokenizer, test_mode=False):
     ])
 
     dataset = BoundaryCaptioningDataset(
-        args, split, tokenizer, transform, args.use_saved_frame, test_mode
+        args, split, tokenizer, transform, test_mode
     )
 
     samples_per_gpu = args.batch_size

@@ -44,8 +44,8 @@ def get_args(notebook=False):
         choices = ['vit_base_patch16_224', 'vit_huge_patch14_224_in21k'], 
         help    = 'image model name'
     )
-    parser.add_argument('--unimodal_modelname', type=str, default='gpt2', choices=['gpt2'], help='unimodal model name')
-    parser.add_argument('--multimodal_modelname', type=str, default='gpt2', choices=['gpt2'], help='multimodal model name')
+    parser.add_argument('--unimodal_modelname', type=str, default='gpt2', choices=['gpt2', 'gpt2-large'], help='unimodal model name')
+    parser.add_argument('--multimodal_modelname', type=str, default='gpt2', choices=['gpt2', 'gpt2-large'], help='multimodal model name')
     parser.add_argument('--img_size', type=int, default=224, help='image size')
     parser.add_argument('--caption_loss_weight', type=float, default=1.,help='caption loss weight')
     parser.add_argument('--contrastive_loss_weight', type=float, default=1.,help='contrastive loss weight')
@@ -59,6 +59,9 @@ def get_args(notebook=False):
         help    = 'select aggregation frames method'
     )
     parser.add_argument('--use_frame_position', action='store_true', help='use frame position')
+    parser.add_argument('--use_seg_features', action='store_true', help='use segmentation features')
+    parser.add_argument('--use_tsn_features', action='store_true', help='use TSN features')
+    parser.add_argument('--use_temporal_pairwise_difference', action='store_true', help='use temporal pairwise difference')
 
     # training
     parser.add_argument('--seed', type=int, default=223, help='my birthday')
@@ -117,7 +120,7 @@ if __name__ == '__main__':
         wandb.init(name=args.exp_name, project='GEBC VideoCoCa', config=args)
 
     # tokenizer
-    tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+    tokenizer = GPT2Tokenizer.from_pretrained(args.unimodal_modelname)
     tokenizer.add_special_tokens({'cls_token':'[CLS]'})
 
 

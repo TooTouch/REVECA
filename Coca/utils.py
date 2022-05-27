@@ -1,8 +1,8 @@
 import numpy as np
 import os
 import random
-
 import torch
+from einops import repeat
 
 def torch_seed(random_seed):
     torch.manual_seed(random_seed)
@@ -26,35 +26,25 @@ def load_checkpoint(checkpoint_path, model):
     return model
 
 def convert_device(inputs, device):
-    for k in inputs.keys():
-        inputs[k] = inputs[k].to(device)
+    if inputs is not None:
+        for k in inputs.keys():
+            inputs[k] = inputs[k].to(device)
 
     return inputs
+    
+def accuracy(outputs, targets, ignore=-100):
+    _, pred = outputs.topk(5, -1, True, True)
+    targets_len = (targets!=ignore).sum(-1)
+    ignore_len = (targets==ignore).sum(-1)
 
+    targets = repeat(targets, 'b l -> b l p', p=5)
+    pred[targets==-100] = -100
 
-def agg_inputs_to_batch(inputs, test_mode=False):
-    boundary_ids = inputs[0]
+    res = []
+    for k in [1,5]:
+        correct = (pred.eq(targets)[...,:k].sum(-1) >= 1).sum(-1)
 
-    if not test_mode:
-        captions = {
-            'input_ids':torch.stack(inputs[1]),
-            'attention_mask':torch.stack(inputs[2])
-        }
-
-        frames = {
-            'boundary':torch.stack(inputs[3]),
-            'before':torch.stack(list(inputs[4]), dim=0),
-            'after':torch.stack(list(inputs[5]), dim=0)
-        }
-
-        labels = torch.stack(inputs[6])
-
-        return boundary_ids, captions, frames, labels
-    else:
-        frames = {
-            'boundary':torch.stack(inputs[1]),
-            'before':torch.stack(list(inputs[2]), dim=0),
-            'after':torch.stack(list(inputs[3]), dim=0)
-        }
-
-        return boundary_ids, frames
+        acc = ((correct - ignore_len) / targets_len).mean()
+        res.append(acc)
+        
+    return res[0], res[1]

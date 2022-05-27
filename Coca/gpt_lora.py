@@ -7,7 +7,7 @@ import torch.nn as nn
 class GPT2LoRA(nn.Module) :
     def __init__(self, config) :
         super().__init__()
-        self.model = AutoModelForPreTraining.from_pretrained("gpt2", config=config)
+        self.model = AutoModelForPreTraining.from_pretrained("gpt2-large", config=config)
         self.config = config
 
         if True in config.enable_lora :
@@ -49,7 +49,7 @@ class GPT2LoRA(nn.Module) :
 
 def main() :
     import time
-    config = AutoConfig.from_pretrained("gpt2")
+    config = AutoConfig.from_pretrained("gpt2-large")
     config.lora_attn_dim = 8
     config.lora_attn_alpha = 8
     config.lora_dropout = 0.1
@@ -59,7 +59,7 @@ def main() :
     config.freeze_pretrained_layers = True
     model = GPT2LoRA(config).to("cuda")
 
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    tokenizer = AutoTokenizer.from_pretrained("gpt2-large")
 
     for i in range(5) :
         print(i)    

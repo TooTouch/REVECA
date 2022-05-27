@@ -15,12 +15,17 @@ def infer(args, model, tokenizer, dataloader):
     model.eval()
     with torch.no_grad():
         for idx, inputs in enumerate(tqdm(dataloader)):
-            boundary_ids, frames = inputs
-            frames = convert_device(frames, args.device)
+            boundary_ids, frames, seg_features, tsn_features = inputs
+            frames, seg_features, tsn_features = convert_device(frames, device), convert_device(seg_features, device), convert_device(tsn_features, device)
         
+            inputs = {
+                'frames'       : frames,
+                'seg_features' : seg_features,
+                'tsn_features' : tsn_features
+            }
             # predict
             output = model.generate(
-                frames, 
+                inputs, 
                 max_length             = args.gen_max_length, 
                 decoder_start_token_id = tokenizer.encode('Subject')[0], 
                 num_beams              = args.num_beams, 

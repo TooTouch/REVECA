@@ -6,7 +6,8 @@ from transformers import GPT2Model, GPT2Config
 from transformers.generation_utils import GenerationMixin
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions, CausalLMOutputWithCrossAttentions
 from timm import create_model as timm_create_model
-
+from timm.models.layers import PatchEmbed
+from utils import accuracy
 
 def exists(val):
     return val is not None
@@ -201,6 +202,9 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         contrastive_loss_weight,
         num_img_queries = 256,
         use_frame_position = False,
+        use_seg_features = False,
+        use_tsn_features = False,
+        use_temporal_pairwise_difference = False,
         num_frames = 21,
         heads = 8,
         pad_id = None,
@@ -215,10 +219,6 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         self.config = GPT2Config()
         self.config.is_encoder_decoder = True
         self.main_input_name = 'frames'
-
-        # use frame position
-        self.use_frame_position = use_frame_position
-        self.num_frames = num_frames
 
         # models
         self.image_encoder = image_encoder
@@ -238,35 +238,61 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         self.pad_id = pad_id
 
         # attention pooling for image tokens
-        dim = self.unimodal_decoder.config.n_embd
-        image_dim = self.image_encoder.embed_dim 
-        image_dim = image_dim if not self.use_frame_position else image_dim + 1
-        dim_head = image_dim // heads
-        self.img_queries = nn.Parameter(torch.randn(num_img_queries + 1, dim)) # num image queries for multimodal, but 1 extra CLS for contrastive learning
+        self.num_img_queries = num_img_queries
+        self.unimodal_decoder_dim = self.unimodal_decoder.config.n_embd
+        self.image_dim = self.image_encoder.embed_dim 
+        # image_dim = image_dim if not self.use_frame_position else image_dim + 1 #TODO: 만약 frame_pos_embed가 잘되면 삭제
+        dim_head = self.image_dim // heads
+        self.img_queries = nn.Parameter(torch.randn(self.num_img_queries + 1, self.unimodal_decoder_dim)) # num image queries for multimodal, but 1 extra CLS for contrastive learning
         self.img_attn_pool = CrossAttention(
-            dim          = dim, 
-            context_dim  = image_dim, 
+            dim          = self.unimodal_decoder_dim, 
+            context_dim  = self.image_dim, 
             dim_head     = dim_head, 
             heads        = heads, 
             norm_context = True
         )
 
-        self.img_attn_pool_norm = LayerNorm(dim)
-        self.cls_norm = LayerNorm(dim)
+        self.img_attn_pool_norm = LayerNorm(self.unimodal_decoder_dim)
+        self.cls_norm = LayerNorm(self.unimodal_decoder_dim)
+
+        # seg features
+        self.use_seg_features = use_seg_features
+        if self.use_seg_features:
+            self.seg_patch_embed = PatchEmbed(
+                img_size   = self.image_encoder.patch_embed.img_size, 
+                patch_size = self.image_encoder.patch_embed.patch_size, 
+                in_chans   = 1,
+                embed_dim  = self.image_encoder.patch_embed.proj.out_channels
+            )
+
+        # tsn features
+        self.use_tsn_features = use_tsn_features
+        if self.use_tsn_features:
+            self.tsn_embed = nn.Linear(2048, self.unimodal_decoder_dim)
+            self.tsn_pos_embed = nn.Embedding(3, self.unimodal_decoder_dim)
+
+        # Temporal Pairwise Difference
+        self.use_temporal_pairwise_difference = use_temporal_pairwise_difference
+
+        # use frame position
+        self.use_frame_position = use_frame_position
+        self.num_frames = num_frames
+        if self.use_frame_position:
+            self.frame_pos_embed = nn.Embedding(self.num_frames, self.image_dim)
 
         # contrastive learning temperature
         self.temperature = nn.Parameter(torch.Tensor([1.]))
 
         # to logits
         self.to_logits = nn.Sequential(
-            LayerNorm(dim),
-            nn.Linear(dim, num_tokens, bias=False)
+            LayerNorm(self.unimodal_decoder_dim),
+            nn.Linear(self.unimodal_decoder_dim, num_tokens, bias=False)
         )
 
         # they used embedding weight tied projection out to logits, not common, but works
         self.to_logits[-1].weight = nn.Parameter(self.unimodal_decoder.wte.weight[:-1,:])
 
-    def forward(self, captions, frames=None, frames_embed=None, labels=None, return_loss=False, **kwargs):
+    def forward(self, captions, frames=None, seg_features=None, tsn_features=None, frames_embed=None, labels=None, return_loss=False, **kwargs):
 
         # unimodal decoding
         captions_cls_embed, captions_embed = self.embed_captions(captions, cls_return=return_loss)
@@ -274,21 +300,27 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         # image encoding
         if frames_embed is None:
             captions['attention_mask'] = captions['attention_mask'][:,:-1]
-            frames_cls_embed, frames_embed = self.aggregation_frames(frames)
+            frames_cls_embed, frames_embed = self.aggregation_frames(
+                frames       = frames, 
+                seg_features = seg_features,
+                tsn_features = tsn_features
+            )
         else:
             captions['attention_mask'] = None
 
         # multimodal decoding
         output = self.multimodal_decoder(
-            hidden_states = captions_embed,
-            attention_mask = captions['attention_mask'],
+            hidden_states         = captions_embed,
+            attention_mask        = captions['attention_mask'],
             encoder_hidden_states = frames_embed
         )
 
         logits = self.to_logits(output['last_hidden_state'])
 
+        acc1, acc5 = accuracy(logits, labels)
+        caption_loss, contrastive_loss = self.calc_loss(captions_cls_embed, frames_cls_embed, logits, labels)
         if return_loss:
-            return self.calc_loss(captions_cls_embed, frames_cls_embed, logits, labels)
+            return acc1, acc5, caption_loss, contrastive_loss
 
         else:
             return CausalLMOutputWithCrossAttentions(
@@ -310,75 +342,161 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
             return None, unimodal_output['last_hidden_state']
 
 
-    def embed_frame(self, frame, pos_idx):    
+    def embed_frame(self, frame, seg_features=None, pos_idx=0):    
         self.image_encoder.eval()
         with torch.no_grad():
-            image_tokens = self.image_encoder.forward_features(frame).detach()
+            image_embed = self.image_encoder.forward_features(frame).detach()
 
+        # seg features
+        if seg_features is not None:
+            seg_embed = self.seg_patch_embed(seg_features)
+            image_embed[:,:-1,:] += seg_embed
+
+        # use frame position
         if self.use_frame_position:
-            image_tokens = self.add_frame_position(image_tokens, pos_idx)
+            image_embed = self.add_frame_position(image_embed, pos_idx)
 
         # attention pool image tokens
-        img_queries = repeat(self.img_queries, 'n d -> b n d', b=image_tokens.shape[0])
-        img_queries = self.img_attn_pool(img_queries, image_tokens)
+        img_queries = repeat(self.img_queries, 'n d -> b n d', b=image_embed.shape[0])
+        img_queries = self.img_attn_pool(img_queries, image_embed)
         img_queries = self.img_attn_pool_norm(img_queries)
 
         return img_queries[:, 0], img_queries[:, 1:]
 
 
-    def aggregation_frames(self, frames):
+    def aggregation_frames(self, frames, seg_features=None, tsn_features=None):
         """
         cls_embed: (batch, dim)
         frames_embed: (batch, n_query, dim)
         """
-        cls_embed_list = [] 
-        frames_embed_list = []
+        num_half_frames = self.num_frames//2
+        batch_size = frames['boundary'].size(0)
+        device = frames['boundary'].device
+
+        all_cls_embed = torch.zeros(
+            (batch_size, self.num_frames, self.unimodal_decoder.config.n_embd)).to(device) 
+        all_frames_embed = torch.zeros(
+            (batch_size, self.num_frames, self.num_img_queries, self.unimodal_decoder.config.n_embd)).to(device)
+
         pos_idx = 0
 
         # before boundary
         for i in range(frames['before'].shape[1]):
-            cls_embed, frames_embed = self.embed_frame(frames['before'][:,i,:,:], pos_idx)
-            cls_embed_list.append(cls_embed)
-            frames_embed_list.append(frames_embed)
+            cls_embed, frames_embed = self.embed_frame(
+                frame        = frames['before'][:,i,:,:], 
+                seg_features = seg_features['before'][:,i,:,:] if seg_features is not None else seg_features,
+                pos_idx      = pos_idx
+            )
+            all_cls_embed[:,pos_idx,...] = cls_embed
+            all_frames_embed[:,pos_idx,...] = frames_embed
             pos_idx += 1
 
         # boundary
-        cls_embed, frames_embed = self.embed_frame(frames['boundary'], pos_idx)
-        cls_embed_list.append(cls_embed)
-        frames_embed_list.append(frames_embed)
+        cls_embed, frames_embed = self.embed_frame(
+            frame        = frames['boundary'], 
+            seg_features = seg_features['boundary'] if seg_features is not None else seg_features,
+            pos_idx      = pos_idx
+        )
+        all_cls_embed[:,pos_idx,...] = cls_embed
+        all_frames_embed[:,pos_idx,...] = frames_embed
         pos_idx += 1
 
         # before boundary
         for i in range(frames['after'].shape[1]):
-            cls_embed, frames_embed = self.embed_frame(frames['after'][:,i,:,:], pos_idx)
-            cls_embed_list.append(cls_embed)
-            frames_embed_list.append(frames_embed)
+            cls_embed, frames_embed = self.embed_frame(
+                frame        = frames['after'][:,i,:,:], 
+                seg_features = seg_features['after'][:,i,:,:] if seg_features is not None else seg_features,
+                pos_idx      = pos_idx
+            )
+            all_cls_embed[:,pos_idx,...] = cls_embed
+            all_frames_embed[:,pos_idx,...] = frames_embed
             pos_idx += 1
 
         # aggregation
-        cls_embed = torch.stack(cls_embed_list).mean(dim=0)
+        cls_embed = all_cls_embed.mean(dim=1)
+        frames_embed = getattr(self, self.aggregation_frames_method)(all_frames_embed)
 
-        return cls_embed, getattr(self, self.aggregation_frames_method)(frames_embed_list)                
+        # Temperal Pairwise Difference
+        if self.use_temporal_pairwise_difference:
+            tpd_cls_embed = self.temporal_pairwise_difference(all_cls_embed)
+            frames_embed = torch.cat([frames_embed, tpd_cls_embed], dim=1)
 
-    def aggregation_frames_method1(self, frames_embed_list):
-        frames_embed = torch.stack(frames_embed_list).mean(dim=0) 
+        # TSN features
+        if self.use_tsn_features:
+            tsn_embed = self.embed_tsn_features(tsn_features)
+            frames_embed = torch.cat([frames_embed, tsn_embed], dim=1)
+
+        return cls_embed, frames_embed                
+
+    def aggregation_frames_method1(self, all_frames_embed):
+        frames_embed = torch.stack(all_frames_embed).mean(dim=1) 
         
         return frames_embed
 
-    def aggregation_frames_method2(self, frames_embed_list):   
-        frames_embed = torch.cat(frames_embed_list, dim=1) 
+    def aggregation_frames_method2(self, all_frames_embed):   
+        frames_embed = rearrange(all_frames_embed, 'b f n d -> b (f n) d')
         
         return frames_embed
 
-    def add_frame_position(self, frames_embed, pos_idx):
-        batch_size, num_tokens, _ = frames_embed.size()
-        device = frames_embed.device 
+    def add_frame_position(self, image_tokens, pos_idx=0):
+        batch_size, num_tokens, _ = image_tokens.size()
+        device = image_tokens.device
+        # device = image_tokens.device 
 
-        pos = torch.zeros((batch_size, num_tokens, 1)).to(device)
-        pos -= 2 * (1 - pos_idx/(self.num_frames -1)) - 1
-        frames_embed = torch.cat([frames_embed, pos], dim=-1)
+        # pos = torch.zeros((batch_size, num_tokens, 1)).to(self.device)
+        # pos -= 2 * (1 - pos_idx/(self.num_frames -1)) - 1
+        # image_tokens = torch.cat([image_tokens, pos], dim=-1)
 
-        return frames_embed
+        frame_pos_embed = self.frame_pos_embed(torch.tensor(pos_idx).to(device))
+        frame_pos_embed = repeat(frame_pos_embed, 'd -> b t d', b=batch_size, t=num_tokens)
+
+        image_tokens += frame_pos_embed
+
+        return image_tokens
+
+    def temporal_pairwise_difference(self, all_cls_embed):
+        device = all_cls_embed
+
+        before_cls = all_cls_embed[:,:10]
+        boundary_cls = all_cls_embed[:,10]
+        after_cls = all_cls_embed[:,-10:]
+        
+        num_half_frames = self.num_frames//2
+        batch_size = boundary_cls.size(0)
+
+        tpd_cls_embed = torch.zeros((batch_size, num_half_frames ** 2 + num_half_frames * 2,boundary_cls.size(1))).to(device)
+        for b_idx in range(num_half_frames):
+            for a_idx in range(num_half_frames):
+                tpd_cls_embed[:,(b_idx * num_half_frames) + (a_idx % num_half_frames),:] = before_cls[:,b_idx,:] - after_cls[:,a_idx,:]
+        
+        for b_idx in range(num_half_frames):
+            tpd_cls_embed[:,num_half_frames ** 2 + b_idx,:] = before_cls[:,b_idx,:] - boundary_cls
+        
+        for a_idx in range(num_half_frames):
+            tpd_cls_embed[:,num_half_frames ** 2 + num_half_frames + a_idx,:] = boundary_cls - after_cls[:,a_idx,:]
+
+        return tpd_cls_embed
+
+
+    def embed_tsn_features(self, tsn_features):
+        device = tsn_features['before'].device
+        batch_size = tsn_features['before'].size(0)
+        tsn_embed = torch.zeros((batch_size, 3, self.unimodal_decoder_dim)).to(device)
+
+        # embedding
+        tsn_embed[:,0,:] = self.tsn_embed(tsn_features['before'])
+        tsn_embed[:,1,:] = self.tsn_embed(tsn_features['after'])
+        tsn_embed[:,2,:] = self.tsn_embed(tsn_features['before'] - tsn_features['after'])
+
+        # add position embedding using broadcasting
+        # tsn_embed[i] = (batch size x dim) + (1 x dim)
+        tsn_embed[:,0,:] += self.tsn_pos_embed(torch.tensor(0).to(device)) 
+        tsn_embed[:,1,:] += self.tsn_pos_embed(torch.tensor(1).to(device))
+        tsn_embed[:,2,:] += self.tsn_pos_embed(torch.tensor(2).to(device))
+
+        return tsn_embed
+
+
 
     def calc_loss(self, captions_cls_embed, frame_cls_embed, pred_captions, true_captions):
         batch, device = captions_cls_embed.shape[0], captions_cls_embed.device
@@ -411,7 +529,7 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         model_kwargs = None,
     ):
 
-        return inputs['boundary'], inputs, model_kwargs
+        return inputs['frames']['boundary'], inputs, model_kwargs
 
     def prepare_inputs_for_generation(self, captions, **model_kwargs):
         captions = captions.to(self.device)
@@ -423,7 +541,7 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         frames = model_input_name # actually this is frames
         encoder = self.get_encoder()
 
-        model_kwargs["encoder_outputs"] = encoder(frames)[1]
+        model_kwargs["encoder_outputs"] = encoder(**frames)[1]
 
         return model_kwargs
 
@@ -454,24 +572,27 @@ def create_model(args, tokenizer):
     unimodal_decoder = GPT2Model.from_pretrained(args.unimodal_modelname)
     unimodal_decoder.resize_token_embeddings(len(tokenizer))
 
-    config = GPT2Config()
+    config = GPT2Config.from_pretrained(args.multimodal_modelname)
     config.add_cross_attention = True
-    multimodal_decoder = MultiModalDecoder.from_pretrained(args.unimodal_modelname, config=config)
+    multimodal_decoder = MultiModalDecoder.from_pretrained(args.multimodal_modelname, config=config)
 
     model = VideoBoudnaryCoCa(
-        num_tokens                = len(tokenizer)-1, 
-        image_encoder             = image_encoder, 
-        unimodal_decoder          = unimodal_decoder, 
-        multimodal_decoder        = multimodal_decoder,
-        aggregation_frames_method = args.aggregation_frames_method,
-        caption_loss_weight       = args.caption_loss_weight,
-        contrastive_loss_weight   = args.contrastive_loss_weight,
-        num_img_queries           = args.num_img_queries,
-        use_frame_position        = args.use_frame_position,
-        num_frames                = 2 * args.max_sample_num + 1,
-        heads                     = args.num_heads,
-        pad_id                    = tokenizer.encode(tokenizer.eos_token)[0],
-        device                    = args.device
+        num_tokens                       = len(tokenizer)-1, 
+        image_encoder                    = image_encoder, 
+        unimodal_decoder                 = unimodal_decoder, 
+        multimodal_decoder               = multimodal_decoder,
+        aggregation_frames_method        = args.aggregation_frames_method,
+        caption_loss_weight              = args.caption_loss_weight,
+        contrastive_loss_weight          = args.contrastive_loss_weight,
+        num_img_queries                  = args.num_img_queries,
+        use_frame_position               = args.use_frame_position,
+        use_seg_features                 = args.use_seg_features,
+        use_tsn_features                 = args.use_tsn_features,
+        use_temporal_pairwise_difference = args.use_temporal_pairwise_difference,
+        num_frames                       = 2 * args.max_sample_num + 1,
+        heads                            = args.num_heads,
+        pad_id                           = tokenizer.encode(tokenizer.eos_token)[0],
+        device                           = args.device
     )
 
     return model
