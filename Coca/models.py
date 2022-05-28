@@ -571,7 +571,6 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
             model_kwargs["encoder_outputs"] = encoder_outputs
         return input_ids, model_kwargs
 
-
 class Conv1D(nn.Module):
     """
     1D-convolutional layer as defined by Radford et al. for OpenAI GPT (and also used in GPT-2).
@@ -594,8 +593,7 @@ class Conv1D(nn.Module):
         x = torch.addmm(self.bias, x.view(-1, x.size(-1)), self.weight)
         x = x.view(size_out)
         return x
-
-
+        
 class Conv1D_LoRA(Conv1D, lora.LoRALayer):
     # LoRA implemented in a dense layer
     def __init__(
@@ -635,24 +633,28 @@ class Conv1D_LoRA(Conv1D, lora.LoRALayer):
         Conv1D.train(self, mode)
         if self.merge_weights and self.merged:
             # Make sure that the weights are not merged
-            self.weight.data -= (self.lora_B @ self.lora_A).view(self.weight.shape) * self.scaling
+            self.weight.data -= (self.lora_B @ self.lora_A) * self.scaling
             self.merged = False
     
     def eval(self):
         Conv1D.eval(self)
         if self.merge_weights and not self.merged:
             # Merge the weights and mark it
-            self.weight.data += (self.lora_B @ self.lora_A).view(self.weight.shape) * self.scaling
+            self.weight.data += (self.lora_B @ self.lora_A) * self.scaling
             self.merged = True
 
     def forward(self, x: torch.Tensor):
         if self.r > 0 and not self.merged:
-            return F.Conv1d(
-                x, 
-                self.weight + (self.lora_B @ self.lora_A).view(self.weight.shape) * self.scaling,
-                self.bias, self.stride, self.padding, self.dilation, self.groups
-            )
-        return Conv1D.forward(self, x)
+            size_out = x.size()[:-1] + (self.nf,)
+            result = torch.addmm(self.bias, x.view(-1, x.size(-1)), self.weight)
+            result = result.view(size_out)
+            
+            if self.r > 0:
+                result += (self.lora_dropout(x) @ self.lora_A.T @ self.lora_B.T) * self.scaling
+            return result
+        else:
+            return F.linear(x, self.weight, bias=self.bias)
+
 
 
 def set_lora(args, model):
