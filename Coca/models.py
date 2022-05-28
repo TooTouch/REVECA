@@ -355,7 +355,7 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         # seg features
         if seg_features is not None:
             seg_embed = self.seg_patch_embed(seg_features)
-            image_embed[:,:-1,:] += seg_embed
+            image_embed[:,1:,:] += seg_embed
 
         # use frame position
         if self.use_frame_position:
