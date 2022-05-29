@@ -162,11 +162,12 @@ class CaptionExtraction:
         self.max_token_length = args.max_token_length
         self.tokenizer = tokenizer
         
-    def get_tokens(self, caption, splitter='//'):
+    def get_tokens(self, caption, splitter='//', use_caption_aug=False):
         
         # check caption
-        splitted_caption = caption.split(splitter)
-        assert len(splitted_caption) == 3, "Invalid: Caption has more than 3 parts: " + caption
+        if not use_caption_aug:
+            splitted_caption = caption.split(splitter)
+            assert len(splitted_caption) == 3, "Invalid: Caption has more than 3 parts: " + caption
         
         # add eos token
         caption = caption + self.tokenizer.eos_token
@@ -225,7 +226,7 @@ class CaptionExtraction:
 
 
 class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
-    def __init__(self, args, split, tokenizer, transform=None, test_mode=False):
+    def __init__(self, args, split, tokenizer, transform=None, test_mode=False, use_replace_01=False, use_caption_aug=False, caption_key_prob=[0.2, 0.2, 0.2, 0.4]):
         super(BoundaryCaptioningDataset).__init__()
         VideoExtraction.__init__(self, args, split, transform)
         CaptionExtraction.__init__(self, args, tokenizer)
@@ -252,6 +253,13 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
 
         # read tsn features
         self.use_tsn_features = args.use_tsn_features
+        
+        # text augmentation
+        self.use_caption_aug = use_caption_aug
+        self.caption_key_prob = caption_key_prob
+
+        # use replace 
+        self.use_replace_01 = use_replace_01
 
         # make boundary list
         self.boundary_list = self.build_boundary_list()
@@ -276,8 +284,24 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
 
         # train or test mode
         if not self.test_mode:
-            caption = boundary['caption']        
-            input_ids, label_ids, attention_mask = self.get_tokens(caption)
+            if self.use_caption_aug:
+                k = np.random.choice(['subject','status_before','status_after','caption'], size=1, p=self.caption_key_prob)[0]
+                if k == 'subject':
+                    caption = 'Subject: ' + boundary[k]
+                elif k == 'status_before':
+                    caption = 'Status_Before: ' + boundary[k]
+                elif k == 'status_after':
+                    caption = 'Status_After: ' + boundary[k]
+                elif k == 'caption':
+                    caption = 'Caption: ' + boundary[k]
+            else:
+                caption = boundary['caption']
+
+            if self.use_replace_01:
+                caption = caption.replace('/0','the subject disappeared')
+                caption = caption.replace('/1','the subject appeared')
+      
+            input_ids, label_ids, attention_mask = self.get_tokens(caption, use_caption_aug=self.use_caption_aug)
 
             return boundary_id, {'input_ids':input_ids, 'attention_mask':attention_mask}, frames, seg_features, tsn_features, label_ids
             
@@ -352,7 +376,14 @@ def create_dataloader(args, split, tokenizer, test_mode=False):
     ])
 
     dataset = BoundaryCaptioningDataset(
-        args, split, tokenizer, transform, test_mode
+        args             = args, 
+        split            = split, 
+        tokenizer        = tokenizer, 
+        transform        = transform, 
+        test_mode        = test_mode, 
+        use_replace_01   = args.use_replace_01,
+        use_caption_aug  = args.use_caption_aug if split == 'train' else False, 
+        caption_key_prob = args.caption_key_prob
     )
 
     samples_per_gpu = args.batch_size
@@ -364,6 +395,8 @@ def create_dataloader(args, split, tokenizer, test_mode=False):
         _logger.info("Train with {} samples per GPU.".format(samples_per_gpu))
         _logger.info("Total batch size {}".format(samples_per_batch))
         _logger.info("Total training steps {}".format(num_iters))
+        if args.use_caption_aug:
+            _logger.info("Use Caption Augmentation")
 
 
     dataloader = DataLoader(

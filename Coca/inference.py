@@ -30,7 +30,9 @@ def infer(args, model, tokenizer, dataloader):
                 decoder_start_token_id = tokenizer.encode('Subject')[0], 
                 num_beams              = args.num_beams, 
                 top_k                  = args.top_k,
-                top_p                  = args.top_p
+                top_p                  = args.top_p,
+                no_repeat_ngram_size   = args.no_repeat_ngram_size,
+                early_stopping         = args.use_early_stopping
             )   
     
             pred_caps = tokenizer.batch_decode(output)

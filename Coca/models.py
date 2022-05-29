@@ -210,6 +210,7 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         use_seg_features = False,
         use_tsn_features = False,
         use_temporal_pairwise_difference = False,
+        use_contrastive_each = False,
         num_frames = 21,
         heads = 8,
         pad_id = None,
@@ -233,7 +234,7 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         # aggregation frame method
         self.aggregation_frames_method = aggregation_frames_method
 
-        freeze_model_and_make_eval_(self.image_encoder)
+        # freeze_model_and_make_eval_(self.image_encoder)
 
         # loss weights
         self.caption_loss_weight = caption_loss_weight
@@ -288,6 +289,11 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         # contrastive learning temperature
         self.temperature = nn.Parameter(torch.Tensor([1.]))
 
+        self.use_contrastive_each = use_contrastive_each
+        if self.use_contrastive_each:
+            self.temperature_caption = nn.Parameter(torch.Tensor([1.]))
+            self.temperature_frame = nn.Parameter(torch.Tensor([1.]))
+
         # to logits
         self.to_logits = nn.Sequential(
             LayerNorm(self.unimodal_decoder_dim),
@@ -295,7 +301,7 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         )
 
         # they used embedding weight tied projection out to logits, not common, but works
-        self.to_logits[-1].weight = nn.Parameter(self.unimodal_decoder.wte.weight[:-1,:])
+        self.to_logits[-1].weight = nn.Parameter(self.unimodal_decoder.wte.weight)
 
     def forward(self, captions, frames=None, seg_features=None, tsn_features=None, frames_embed=None, labels=None, return_loss=False, **kwargs):
 
@@ -348,9 +354,9 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
 
 
     def embed_frame(self, frame, seg_features=None, pos_idx=0):    
-        self.image_encoder.eval()
-        with torch.no_grad():
-            image_embed = self.image_encoder.forward_features(frame).detach()
+        # self.image_encoder.eval()
+        # with torch.no_grad():
+        image_embed = self.image_encoder.forward_features(frame)
 
         # seg features
         if seg_features is not None:
@@ -514,11 +520,30 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         caption_loss = caption_loss * self.caption_loss_weight
 
         # calculate contrastive loss
+        # captions and frames
         sim = einsum('i d, j d -> i j', captions_cls_embed, frame_cls_embed)
         sim = sim * self.temperature.exp()
+
         contrastive_labels = torch.arange(batch, device=device)
 
         contrastive_loss = (ce(sim, contrastive_labels) + ce(sim.t(), contrastive_labels)) * 0.5
+
+        if self.use_contrastive_each:
+            # captions
+            caption_sim = einsum('i d, j d -> i j', captions_cls_embed, captions_cls_embed)
+            caption_sim = caption_sim * self.temperature_caption.exp()
+
+            # frames
+            frame_sim = einsum('i d, j d -> i j', frame_cls_embed, frame_cls_embed)
+            frame_sim = frame_sim * self.temperature_frame.exp()
+
+            # loss
+            contrastive_caption_loss = (ce(caption_sim, contrastive_labels) + ce(caption_sim.t(), contrastive_labels)) * 0.5
+            contrastive_frame_loss = (ce(frame_sim, contrastive_labels) + ce(frame_sim.t(), contrastive_labels)) * 0.5
+
+            contrastive_loss += contrastive_frame_loss + contrastive_caption_loss
+
+
         contrastive_loss = contrastive_loss * self.contrastive_loss_weight
 
         return caption_loss, contrastive_loss
@@ -571,6 +596,7 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
             model_kwargs["encoder_outputs"] = encoder_outputs
         return input_ids, model_kwargs
 
+
 class Conv1D(nn.Module):
     """
     1D-convolutional layer as defined by Radford et al. for OpenAI GPT (and also used in GPT-2).
@@ -593,7 +619,8 @@ class Conv1D(nn.Module):
         x = torch.addmm(self.bias, x.view(-1, x.size(-1)), self.weight)
         x = x.view(size_out)
         return x
-        
+
+
 class Conv1D_LoRA(Conv1D, lora.LoRALayer):
     # LoRA implemented in a dense layer
     def __init__(
@@ -656,7 +683,6 @@ class Conv1D_LoRA(Conv1D, lora.LoRALayer):
             return F.linear(x, self.weight, bias=self.bias)
 
 
-
 def set_lora(args, model):
     for layer in model.h:
         layer.attn.c_attn = Conv1D_LoRA(
@@ -696,10 +722,26 @@ def calc_params(model):
 
 def create_model(args, tokenizer):
     # image encoder
-    image_encoder = timm_create_model(args.image_modelname, pretrained=True, img_size=args.img_size)
+    image_encoder = timm_create_model(
+        args.image_modelname, 
+        pretrained = True, 
+        img_size   = args.img_size,
+        apply_lora = args.use_img_encoder_lora, 
+        lora_r     = args.lora_r, 
+        lora_alpha = args.lora_alpha
+    )
+    if args.use_img_encoder_lora:
+        _logger.info('Build a Image Encoder with LoRA')
+        before_param = calc_params(image_encoder)
+
+        # apply lora
+        lora.mark_only_lora_as_trainable(image_encoder)
+
+        after_param = calc_params(image_encoder)
+        _logger.info('Trainable parameters of a Image Encoder change {} to {}'.format(before_param, after_param))
 
     # unimodal decoder
-    if args.use_lora:
+    if args.use_text_decoder_lora:
         config = GPT2Config.from_pretrained(args.unimodal_modelname)
         unimodal_decoder = GPT2Model(config=config)
         unimodal_decoder = set_lora(args, unimodal_decoder)
@@ -720,12 +762,12 @@ def create_model(args, tokenizer):
         
     else:
         unimodal_decoder = GPT2Model.from_pretrained(args.unimodal_modelname)
-    unimodal_decoder.resize_token_embeddings(len(tokenizer))
+    # unimodal_decoder.resize_token_embeddings(len(tokenizer))
 
     # multimodal decoder
     config = GPT2Config.from_pretrained(args.multimodal_modelname)
     config.add_cross_attention = True
-    if args.use_lora:
+    if args.use_text_decoder_lora:
         multimodal_decoder = MultiModalDecoder(config=config)
         multimodal_decoder = set_lora(args, multimodal_decoder)
         multimodal_decoder.load_state_dict(
@@ -733,13 +775,13 @@ def create_model(args, tokenizer):
             strict=False
         )
 
-        _logger.info('Build a Unimodal Decoder with LoRA')
+        _logger.info('Build a Multimodal Decoder with LoRA')
         before_param = calc_params(multimodal_decoder)
 
         # set lora grad
         lora.mark_only_lora_as_trainable(multimodal_decoder)
 
-        after_param = calc_params(unimodal_decoder)
+        after_param = calc_params(multimodal_decoder)
         _logger.info('Trainable parameters of a Multimodal Decoder change {} to {}'.format(before_param, after_param))
 
     else:
@@ -747,7 +789,7 @@ def create_model(args, tokenizer):
 
 
     model = VideoBoudnaryCoCa(
-        num_tokens                       = len(tokenizer)-1, 
+        num_tokens                       = len(tokenizer), 
         image_encoder                    = image_encoder, 
         unimodal_decoder                 = unimodal_decoder, 
         multimodal_decoder               = multimodal_decoder,

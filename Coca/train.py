@@ -46,6 +46,7 @@ def training(
     
     model.train()
     optimizer.zero_grad()
+
     for step in range(args.num_training_steps):    
         _, captions, frames, seg_features, tsn_features, labels = next(iter(trainloader))
         captions, labels = convert_device(captions, device), labels.to(device)

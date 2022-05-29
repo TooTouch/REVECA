@@ -1,22 +1,16 @@
 """ Vision Transformer (ViT) in PyTorch
-
 A PyTorch implement of Vision Transformers as described in:
-
 'An Image Is Worth 16 x 16 Words: Transformers for Image Recognition at Scale'
     - https://arxiv.org/abs/2010.11929
-
 `How to train your ViT? Data, Augmentation, and Regularization in Vision Transformers`
     - https://arxiv.org/abs/2106.10270
-
 The official jax code is released and available at https://github.com/google-research/vision_transformer
-
 Acknowledgments:
 * The paper authors for releasing code and weights, thanks!
 * I fixed my class token impl based on Phil Wang's https://github.com/lucidrains/vit-pytorch ... check it out
 for some einops/einsum fun
 * Simple transformer style inspired by Andrej Karpathy's https://github.com/karpathy/minGPT
 * Bert reference code checks against Huggingface Transformers and Tensorflow Bert
-
 Hacked together by / Copyright 2020, Ross Wightman
 """
 import math
@@ -34,6 +28,8 @@ from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGENET_INCE
 from .helpers import build_model_with_cfg, resolve_pretrained_cfg, named_apply, adapt_input_conv, checkpoint_seq
 from .layers import PatchEmbed, Mlp, DropPath, trunc_normal_, lecun_normal_
 from .registry import register_model
+
+import loralib as lora
 
 _logger = logging.getLogger(__name__)
 
@@ -184,16 +180,23 @@ default_cfgs = {
 
 
 class Attention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0., apply_lora=False, lora_r=0, lora_alpha=0):
         super().__init__()
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = head_dim ** -0.5
 
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        if apply_lora:
+            self.qkv = lora.Linear(dim, dim * 3, r=lora_r, lora_alpha=lora_alpha, merge_weights=False)
+        else:
+            self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
+
+        if apply_lora:
+            self.proj = lora.Linear(dim, dim, r=lora_r, lora_alpha=lora_alpha, merge_weights=False)
+        else:
+            self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
     def forward(self, x):
@@ -225,10 +228,10 @@ class Block(nn.Module):
 
     def __init__(
             self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0., init_values=None,
-            drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
+            drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, apply_lora=False, lora_r=0, lora_alpha=0):
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
+        self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop, apply_lora=apply_lora, lora_r=lora_r, lora_alpha=lora_alpha)
         self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path1 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
@@ -317,7 +320,6 @@ class ParallelBlock(nn.Module):
 
 class VisionTransformer(nn.Module):
     """ Vision Transformer
-
     A PyTorch impl of : `An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale`
         - https://arxiv.org/abs/2010.11929
     """
@@ -326,7 +328,7 @@ class VisionTransformer(nn.Module):
             self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, global_pool='token',
             embed_dim=768, depth=12, num_heads=12, mlp_ratio=4., qkv_bias=True, init_values=None,
             class_token=True, fc_norm=None, drop_rate=0., attn_drop_rate=0., drop_path_rate=0., weight_init='',
-            embed_layer=PatchEmbed, norm_layer=None, act_layer=None, block_fn=Block):
+            embed_layer=PatchEmbed, norm_layer=None, act_layer=None, block_fn=Block, apply_lora=False, lora_r=0, lora_alpha=0):
         """
         Args:
             img_size (int, tuple): input image size
@@ -375,7 +377,8 @@ class VisionTransformer(nn.Module):
         self.blocks = nn.Sequential(*[
             block_fn(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, init_values=init_values,
-                drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer)
+                drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer,
+                apply_lora=apply_lora, lora_r=lora_r, lora_alpha=lora_r)
             for i in range(depth)])
         self.norm = norm_layer(embed_dim) if not use_fc_norm else nn.Identity()
 

@@ -25,6 +25,7 @@ def get_args(notebook=False):
     parser.add_argument('--do_train', action='store_true', default=False)
     parser.add_argument('--do_val', action='store_true', default=False)
     parser.add_argument('--do_test', action='store_true', default=False)
+    parser.add_argument('--do_eval', action='store_true', default=False)
 
     # dataset
     parser.add_argument('--datadir', type=str, default='/datasets/GEBC', help='dataset directory')
@@ -35,13 +36,16 @@ def get_args(notebook=False):
     parser.add_argument('--max_token_length', type=int, default=128, help='maximum token length')
     parser.add_argument('--max_sample_num', type=int, default=10, help='maximum frames of before or after')
     parser.add_argument('--use_saved_frame', action='store_true', default=False, help='use saved frames')
+    parser.add_argument('--use_caption_aug', action='store_true', default=False, help='use caption augmentation')
+    parser.add_argument('--caption_key_prob', nargs='+', type=float, default=[0.2, 0.2, 0.2, 0.4], help='caption key probability')
+    parser.add_argument('--use_replace_01', action='store_true', default=False, help='use replace /0 /1 into disappeared appeared')
 
     # model
     parser.add_argument(
         '--image_modelname',
         type    = str, 
         default = 'vit_huge_patch14_224_in21k', 
-        choices = ['vit_base_patch16_224', 'vit_huge_patch14_224_in21k'], 
+        choices = ['vit_base_patch16_224', 'vit_huge_patch14_224_in21k','vit_large_patch16_224_in21k'], 
         help    = 'image model name'
     )
     parser.add_argument('--unimodal_modelname', type=str, default='gpt2', choices=['gpt2', 'gpt2-large'], help='unimodal model name')
@@ -62,6 +66,7 @@ def get_args(notebook=False):
     parser.add_argument('--use_seg_features', action='store_true', help='use segmentation features')
     parser.add_argument('--use_tsn_features', action='store_true', help='use TSN features')
     parser.add_argument('--use_temporal_pairwise_difference', action='store_true', help='use temporal pairwise difference')
+    parser.add_argument('--use_contrastive_each', action='store_true', help='use contrastive loss per frames and captions')
 
     # training
     parser.add_argument('--seed', type=int, default=223, help='my birthday')
@@ -83,9 +88,12 @@ def get_args(notebook=False):
     parser.add_argument('--num_beams', type=int, default=5, help='number for beam search')
     parser.add_argument('--top_k', type=int, default=None, help='top k generation')
     parser.add_argument('--top_p', type=int, default=None, help='top p generation')
+    parser.add_argument('--no_repeat_ngram_size', type=int, default=None, help='number for n-gram size for stopping generation')
+    parser.add_argument('--use_early_stopping', action='store_true', default=None, help='use early stopping')
 
     # LoRA
-    parser.add_argument('--use_lora', action='store_true', help='use LoRA')
+    parser.add_argument('--use_img_encoder_lora', action='store_true', help='use LoRA for image encoder')
+    parser.add_argument('--use_text_decoder_lora', action='store_true', help='use LoRA for text decoder')
     parser.add_argument('--lora_r', type=int, default=8, help='LoRA rank')
     parser.add_argument('--lora_alpha', type=int, default=8, help='LoRA alpha')
     parser.add_argument('--lora_dropout', type=float, default=0.1, help='LoRA dropout')
@@ -127,50 +135,71 @@ if __name__ == '__main__':
 
     # tokenizer
     tokenizer = GPT2Tokenizer.from_pretrained(args.unimodal_modelname)
-    tokenizer.add_special_tokens({'cls_token':'[CLS]'})
+    tokenizer.add_special_tokens({'cls_token':tokenizer.eos_token})
 
+    if not args.do_eval:
+        # models
+        model = create_model(args, tokenizer)
+        model.to(args.device)
+        if args.num_gpus > 1:
+            model = torch.nn.DataParallel(model, device_ids=args.gpu_ids)
 
-    # models
-    model = create_model(args, tokenizer)
-    model.to(args.device)
-    if args.num_gpus > 1:
-        model = torch.nn.DataParallel(model, device_ids=args.gpu_ids)
+        if args.do_train:
+            # dataloader
+            trainloader = create_dataloader(args, 'train', tokenizer)
+            testloader = create_dataloader(args, 'val', tokenizer)
+            
+            # compile
+            optimizer = Adafactor(
+                model.parameters(), 
+                lr=args.lr, 
+                beta1=0.9, 
+                weight_decay=0.01, 
+                relative_step=False
+            )
+            scheduler = get_cosine_schedule_with_warmup(
+                optimizer,
+                num_warmup_steps   = args.num_warmup_steps, 
+                num_training_steps = args.num_training_steps
+            )
 
-    if args.do_train:
-        # dataloader
-        trainloader = create_dataloader(args, 'train', tokenizer)
-        testloader = create_dataloader(args, 'val', tokenizer)
-        
-        # compile
-        optimizer = Adafactor(
-            model.parameters(), 
-            lr=args.lr, 
-            beta1=0.9, 
-            weight_decay=0.01, 
-            relative_step=False
-        )
-        scheduler = get_cosine_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps   = args.num_warmup_steps, 
-            num_training_steps = args.num_training_steps
-        )
+            # training
+            training(args, model, trainloader, testloader, optimizer, scheduler, args.device)  
 
-        # training
-        training(args, model, trainloader, testloader, optimizer, scheduler, args.device)  
+        elif args.do_val or args.do_test:
+            model = load_checkpoint(args.checkpoint_path, model)
 
-    elif args.do_val or args.do_test:
-        model = load_checkpoint(args.checkpoint_path, model)
+            testloader = create_dataloader(args, 'val' if args.do_val else 'test', tokenizer, test_mode=True)
+            pred_dict = infer(args, model, tokenizer, testloader)
+            
+            for k, v in pred_dict.items():
+                pred_dict[k] = pred_dict[k].replace(tokenizer.eos_token,'')
 
+            filename = f'pred_beam{args.num_beams}_'
+            filename += 'val' if args.do_val else 'test'
+            savepath = os.path.join(args.savedir, args.exp_name, args.checkpoint_path.split('/')[-1].replace('.pt', ''), filename)
+
+            # save predict
+            with open(f'{savepath}.json','w') as fp:
+                json.dump(pred_dict, fp, indent=4)
+
+            if args.do_val:
+                evaluate(
+                    pred_dict = pred_dict,
+                    gt_dict   = testloader.dataset.get_caption(),
+                    savepath  = savepath
+                )
+
+    elif args.do_eval:
         testloader = create_dataloader(args, 'val' if args.do_val else 'test', tokenizer, test_mode=True)
-        pred_dict = infer(args, model, tokenizer, testloader)
-        
+
         filename = f'pred_beam{args.num_beams}_'
         filename += 'val' if args.do_val else 'test'
         savepath = os.path.join(args.savedir, args.exp_name, filename)
 
         # save predict
-        with open(f'{savepath}.json','w') as fp:
-            json.dump(pred_dict, fp, indent=4)
+        with open(f'{savepath}.json','r') as fp:
+            pred_dict = json.load(fp)
 
         if args.do_val:
             evaluate(
@@ -178,6 +207,4 @@ if __name__ == '__main__':
                 gt_dict   = testloader.dataset.get_caption(),
                 savepath  = savepath
             )
-
-        
         
