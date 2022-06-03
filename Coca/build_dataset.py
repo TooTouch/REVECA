@@ -25,12 +25,21 @@ def load_json(filename):
 
 
 class VideoExtraction:
-    def __init__(self, args, split, transform=None):
+    def __init__(self, args, split, transform=None, use_fit_frame=False):
         # define details of videos
         self.max_sample_num = args.max_sample_num
-        self.video_info = pd.DataFrame({'video_path':glob(os.path.join(args.datadir,f'{split}/*'))})
-        self.video_info['video_id'] = self.video_info['video_path'].apply(lambda x: x.split('/')[-1][:11])
+        if split == 'train_val':
+            self.train_video_info = pd.DataFrame({'video_path':glob(os.path.join(args.datadir,f'train/*'))})
+            self.train_video_info['video_id'] = self.train_video_info['video_path'].apply(lambda x: x.split('/')[-1][:11])
+            self.val_video_info = pd.DataFrame({'video_path':glob(os.path.join(args.datadir,f'val/*'))})
+            self.val_video_info['video_id'] = self.val_video_info['video_path'].apply(lambda x: x.split('/')[-1][:11])
+
+            self.video_info = pd.concat([self.train_video_info, self.val_video_info], axis=0)
+        else:
+            self.video_info = pd.DataFrame({'video_path':glob(os.path.join(args.datadir,f'{split}/*'))})
+            self.video_info['video_id'] = self.video_info['video_path'].apply(lambda x: x.split('/')[-1][:11])
         self.transform = transform
+        self.use_fit_frame = use_fit_frame
         
     def _get_frames(self, video_id, timestamps):
         video_path = self.video_info[self.video_info['video_id']==video_id]['video_path'].values[0]
@@ -144,14 +153,20 @@ class VideoExtraction:
 
         # start sampling
         if len(sampled_time['before']) > self.max_sample_num:
-            sampling_step = len(sampled_time['before']) / self.max_sample_num
-            sampled_idx = [int((idx + 1) * sampling_step) - 1 for idx in range(self.max_sample_num)]
-            sampled_time['before'] = [sampled_time['before'][idx] for idx in sampled_idx]
+            if self.use_fit_frame:
+                sampled_time['before'] = sampled_time['before'][:self.max_sample_num]
+            else:
+                sampling_step = len(sampled_time['before']) / self.max_sample_num
+                sampled_idx = [int((idx + 1) * sampling_step) - 1 for idx in range(self.max_sample_num)]
+                sampled_time['before'] = [sampled_time['before'][idx] for idx in sampled_idx]
 
         if len(sampled_time['after']) > self.max_sample_num:
-            sampling_step = len(sampled_time['after']) / self.max_sample_num
-            sampled_idx = [int(idx * sampling_step) for idx in range(self.max_sample_num)]
-            sampled_time['after'] = [sampled_time['after'][idx] for idx in sampled_idx]
+            if self.use_fit_frame:
+                sampled_time['after'] = sampled_time['after'][-self.max_sample_num:]
+            else:
+                sampling_step = len(sampled_time['after']) / self.max_sample_num
+                sampled_idx = [int(idx * sampling_step) for idx in range(self.max_sample_num)]
+                sampled_time['after'] = [sampled_time['after'][idx] for idx in sampled_idx]
 
         return sampled_time    
 
@@ -161,13 +176,13 @@ class CaptionExtraction:
         # define details of captions
         self.max_token_length = args.max_token_length
         self.tokenizer = tokenizer
-        
-    def get_tokens(self, caption, splitter='//', use_caption_aug=False):
+
+    def get_tokens(self, caption, splitter='//', use_caption_aug=False, use_label=False):
         
         # check caption
-        if not use_caption_aug:
-            splitted_caption = caption.split(splitter)
-            assert len(splitted_caption) == 3, "Invalid: Caption has more than 3 parts: " + caption
+        # if not use_caption_aug or not use_label:
+        #     splitted_caption = caption.split(splitter)
+        #     assert len(splitted_caption) == 3, "Invalid: Caption has more than 3 parts: " + caption
         
         # add eos token
         caption = caption + self.tokenizer.eos_token
@@ -195,8 +210,11 @@ class CaptionExtraction:
             cls_id         = self.tokenizer.encode(self.tokenizer.cls_token)
         )
 
-        return torch.tensor(input_ids), torch.tensor(label_ids), torch.LongTensor(attention_mask)
+        input_ids = torch.tensor(input_ids)
+        label_ids = torch.tensor(label_ids)
+        attention_mask = torch.LongTensor(attention_mask)
 
+        return input_ids, label_ids, attention_mask
     def padding_tokens(self, input_ids, label_ids, attention_mask, eos_id):
         """
         Add [CLS] token for CoCa
@@ -226,9 +244,13 @@ class CaptionExtraction:
 
 
 class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
-    def __init__(self, args, split, tokenizer, transform=None, test_mode=False, use_replace_01=False, use_caption_aug=False, caption_key_prob=[0.2, 0.2, 0.2, 0.4]):
+    def __init__(
+        self, args, split, tokenizer, transform=None, test_mode=False, 
+        use_replace_01=False, use_caption_aug=False, caption_key_prob=[0.2, 0.2, 0.2, 0.4], 
+        use_fit_frame=False, use_label=False
+        ):
         super(BoundaryCaptioningDataset).__init__()
-        VideoExtraction.__init__(self, args, split, transform)
+        VideoExtraction.__init__(self, args, split, transform, use_fit_frame)
         CaptionExtraction.__init__(self, args, tokenizer)
         
         # test mode
@@ -240,7 +262,7 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
 
         # read annotation
         self.split = split
-        assert self.split in ['train', 'test', 'val'], "Invalid split: split must in 'train', 'test' and 'val'."
+        assert self.split in ['train', 'test', 'val', 'train_val'], "Invalid split: split must in 'train', 'test' and 'val'."
         self.annotation = load_json(self.cfg[f'{split}_annotation'])
 
         # read saved frames
@@ -257,6 +279,9 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
         # text augmentation
         self.use_caption_aug = use_caption_aug
         self.caption_key_prob = caption_key_prob
+
+        # use label
+        self.use_label = use_label
 
         # use replace 
         self.use_replace_01 = use_replace_01
@@ -284,30 +309,49 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
 
         # train or test mode
         if not self.test_mode:
+            caption = self.label_padding(boundary['label'])
+            caption = f"{caption} //" if self.use_label else ""
+               
             if self.use_caption_aug:
                 k = np.random.choice(['subject','status_before','status_after','caption'], size=1, p=self.caption_key_prob)[0]
                 if k == 'subject':
-                    caption = 'Subject: ' + boundary[k]
+                    caption += 'Subject: ' + boundary[k]
                 elif k == 'status_before':
-                    caption = 'Status_Before: ' + boundary[k]
+                    caption += 'Status_Before: ' + boundary[k]
                 elif k == 'status_after':
-                    caption = 'Status_After: ' + boundary[k]
+                    caption += 'Status_After: ' + boundary[k]
                 elif k == 'caption':
-                    caption = 'Caption: ' + boundary[k]
+                    caption += 'Caption: ' + boundary[k]
             else:
-                caption = boundary['caption']
+                caption += boundary['caption']
 
             if self.use_replace_01:
                 caption = caption.replace('/0','the subject disappeared')
                 caption = caption.replace('/1','the subject appeared')
       
-            input_ids, label_ids, attention_mask = self.get_tokens(caption, use_caption_aug=self.use_caption_aug)
+            input_ids, label_ids, attention_mask = self.get_tokens(caption, use_caption_aug=self.use_caption_aug, use_label=self.use_label)
 
             return boundary_id, {'input_ids':input_ids, 'attention_mask':attention_mask}, frames, seg_features, tsn_features, label_ids
             
         else:
-            return boundary_id, frames, seg_features, tsn_features
+            if self.use_label:
+                caption = self.label_padding(boundary['label'])
+                caption = f"{caption} //" 
+            else:
+                caption = []
+            return boundary_id, caption, frames, seg_features, tsn_features
             
+    def label_padding(self, label):
+        # TODO: hard coding
+        max_label_len = 6
+
+        if label in ['Change of Action', 'Change of Color', 'Change of Subject']:
+            label = self.tokenizer.eos_token * 3 + label
+        if label == 'Multiple':
+            label = self.tokenizer.eos_token * 5 + label
+        
+        return label
+
 
     def build_boundary_list(self):
         boundary_list = []
@@ -325,7 +369,7 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
     def get_frames(self, video_id, boundary_id, timestamps):
         if self.use_saved_frame:
             frames = torch.load(
-                os.path.join(self.datadir, 'frames', f'{self.split}/{boundary_id}.pt')
+                os.path.join(self.datadir, 'frames', f'{boundary_id}.pt')
             )[boundary_id]
         else:
             frames = self._get_frames(video_id, timestamps)
@@ -337,7 +381,7 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
 
         if self.use_seg_features:
             seg_features = {}
-            saved_seg_features = torch.load(os.path.join(self.datadir, 'seg_features', f'{self.split}/{boundary_id}.pt'))
+            saved_seg_features = torch.load(os.path.join(self.datadir, 'seg_features', f'{boundary_id}.pt'))
             seg_features['before'] = saved_seg_features[:self.max_sample_num].to(torch.float).unsqueeze(1)
             seg_features['boundary'] = saved_seg_features[self.max_sample_num].to(torch.float).unsqueeze(0)
             seg_features['after'] = saved_seg_features[-self.max_sample_num:].to(torch.float).unsqueeze(1)    
@@ -382,8 +426,10 @@ def create_dataloader(args, split, tokenizer, test_mode=False):
         transform        = transform, 
         test_mode        = test_mode, 
         use_replace_01   = args.use_replace_01,
-        use_caption_aug  = args.use_caption_aug if split == 'train' else False, 
-        caption_key_prob = args.caption_key_prob
+        use_caption_aug  = args.use_caption_aug if split == 'train' or split == 'train_val' else False, 
+        caption_key_prob = args.caption_key_prob,
+        use_fit_frame    = args.use_fit_frame,
+        use_label        = args.use_label
     )
 
     samples_per_gpu = args.batch_size
@@ -391,18 +437,22 @@ def create_dataloader(args, split, tokenizer, test_mode=False):
     iters_per_batch = len(dataset) // samples_per_batch
     num_iters = iters_per_batch * args.num_training_steps
 
-    if split == 'train':
+    if split == 'train' or split == 'train_val':
         _logger.info("Train with {} samples per GPU.".format(samples_per_gpu))
         _logger.info("Total batch size {}".format(samples_per_batch))
         _logger.info("Total training steps {}".format(num_iters))
         if args.use_caption_aug:
             _logger.info("Use Caption Augmentation")
 
+        if split == 'train_val':
+            _logger.info("Use train and val set together")
+
+
 
     dataloader = DataLoader(
         dataset, 
         batch_size  = samples_per_batch, 
-        sampler     = make_data_sampler(dataset, split=='train'),
+        sampler     = make_data_sampler(dataset, split=='train' or split=='train_val'),
         num_workers = args.num_workers,
         pin_memory  = True
     )
