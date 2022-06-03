@@ -39,6 +39,9 @@ def get_args(notebook=False):
     parser.add_argument('--use_caption_aug', action='store_true', default=False, help='use caption augmentation')
     parser.add_argument('--caption_key_prob', nargs='+', type=float, default=[0.2, 0.2, 0.2, 0.4], help='caption key probability')
     parser.add_argument('--use_replace_01', action='store_true', default=False, help='use replace /0 /1 into disappeared appeared')
+    parser.add_argument('--use_fit_frame', action='store_true', default=False, help='use fit frames')
+    parser.add_argument('--use_label', action='store_true', default=False, help='use label')
+    parser.add_argument('--use_train_val', action='store_true', default=False, help='use train and validation set for training model')
 
     # model
     parser.add_argument(
@@ -67,6 +70,7 @@ def get_args(notebook=False):
     parser.add_argument('--use_tsn_features', action='store_true', help='use TSN features')
     parser.add_argument('--use_temporal_pairwise_difference', action='store_true', help='use temporal pairwise difference')
     parser.add_argument('--use_contrastive_each', action='store_true', help='use contrastive loss per frames and captions')
+    parser.add_argument('--use_n_query_0', action='store_true', help='use n query 0')
 
     # training
     parser.add_argument('--seed', type=int, default=223, help='my birthday')
@@ -90,6 +94,7 @@ def get_args(notebook=False):
     parser.add_argument('--top_p', type=int, default=None, help='top p generation')
     parser.add_argument('--no_repeat_ngram_size', type=int, default=None, help='number for n-gram size for stopping generation')
     parser.add_argument('--use_early_stopping', action='store_true', default=None, help='use early stopping')
+    parser.add_argument('--num_beam_groups', type=int, default=None, help='number of groups for beam search')
 
     # LoRA
     parser.add_argument('--use_img_encoder_lora', action='store_true', help='use LoRA for image encoder')
@@ -146,7 +151,10 @@ if __name__ == '__main__':
 
         if args.do_train:
             # dataloader
-            trainloader = create_dataloader(args, 'train', tokenizer)
+            if args.use_train_val:
+                trainloader = create_dataloader(args, 'train_val', tokenizer)
+            else:
+                trainloader = create_dataloader(args, 'train', tokenizer)
             testloader = create_dataloader(args, 'val', tokenizer)
             
             # compile
@@ -174,10 +182,16 @@ if __name__ == '__main__':
             
             for k, v in pred_dict.items():
                 pred_dict[k] = pred_dict[k].replace(tokenizer.eos_token,'')
+                if args.use_replace_01:
+                    pred_dict[k] = pred_dict[k].replace('the subject disappeared','/0')
+                    pred_dict[k] = pred_dict[k].replace('the subject appeared','/1')
 
-            filename = f'pred_beam{args.num_beams}_'
+                if args.use_label:
+                    pred_dict[k] = ' //'.join(pred_dict[k].split('//')[1:])
+
+            filename = f"pred_beam{args.num_beams}_" 
             filename += 'val' if args.do_val else 'test'
-            savepath = os.path.join(args.savedir, args.exp_name, args.checkpoint_path.split('/')[-1].replace('.pt', ''), filename)
+            savepath = os.path.join(args.savedir, args.exp_name, f"{args.checkpoint_path.split('/')[-1].replace('.pt', '')}_{filename}")
 
             # save predict
             with open(f'{savepath}.json','w') as fp:
@@ -195,7 +209,7 @@ if __name__ == '__main__':
 
         filename = f'pred_beam{args.num_beams}_'
         filename += 'val' if args.do_val else 'test'
-        savepath = os.path.join(args.savedir, args.exp_name, filename)
+        savepath = os.path.join(args.savedir, args.exp_name, f"{args.checkpoint_path.split('/')[-1].replace('.pt', '')}_{filename}")
 
         # save predict
         with open(f'{savepath}.json','r') as fp:
