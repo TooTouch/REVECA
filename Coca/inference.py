@@ -15,7 +15,7 @@ def infer(args, model, tokenizer, dataloader):
     model.eval()
     with torch.no_grad():
         for idx, inputs in enumerate(tqdm(dataloader)):
-            boundary_ids, frames, seg_features, tsn_features = inputs
+            boundary_ids, captions, frames, seg_features, tsn_features = inputs
             frames, seg_features, tsn_features = convert_device(frames, args.device), convert_device(seg_features, args.device), convert_device(tsn_features, args.device)
         
             inputs = {
@@ -23,21 +23,48 @@ def infer(args, model, tokenizer, dataloader):
                 'seg_features' : seg_features,
                 'tsn_features' : tsn_features
             }
-            # predict
-            output = model.generate(
-                inputs, 
-                max_length             = args.gen_max_length, 
-                decoder_start_token_id = tokenizer.encode('Subject')[0], 
-                num_beams              = args.num_beams, 
-                top_k                  = args.top_k,
-                top_p                  = args.top_p,
-                no_repeat_ngram_size   = args.no_repeat_ngram_size,
-                early_stopping         = args.use_early_stopping
-            )   
+
+            if args.use_label:
+                captions = {'decoder_input_ids': torch.tensor([tokenizer.encode(caption) for caption in captions])}
+                captions = convert_device(captions, args.device)   
+                
+                # predict
+                output = model.generate(
+                    inputs, 
+                    decoder_input_ids      = captions['decoder_input_ids'],
+                    max_length             = args.gen_max_length,
+                    num_beams              = args.num_beams, 
+                    num_beam_groups        = args.num_beam_groups,
+                    top_k                  = args.top_k,
+                    top_p                  = args.top_p,
+                    no_repeat_ngram_size   = args.no_repeat_ngram_size,
+                    early_stopping         = args.use_early_stopping
+                )
+            else:
+                # predict
+                output = model.generate(
+                    inputs, 
+                    decoder_start_token_id = tokenizer.encode('Subject')[0], 
+                    max_length             = args.gen_max_length,
+                    num_beams              = args.num_beams, 
+                    num_beam_groups        = args.num_beam_groups,
+                    top_k                  = args.top_k,
+                    top_p                  = args.top_p,
+                    no_repeat_ngram_size   = args.no_repeat_ngram_size,
+                    early_stopping         = args.use_early_stopping
+                )
+                
     
             pred_caps = tokenizer.batch_decode(output)
-            pred_dict.update(dict(zip(boundary_ids, pred_caps)))
+            results = dict(zip(boundary_ids, pred_caps))
+            pred_dict.update(results)
+            for i, (k, v) in enumerate(results.items()):
+                if i==3:
+                    break
+                print('boundary id: ',k)
+                print(v)
                 
+            
     return pred_dict
 
 
