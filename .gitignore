@@ -144,5 +144,9 @@ dmypy.json
 cython_debug/
 
 # End of https://www.toptal.com/developers/gitignore/api/python
-GEBC/utils/pycocoevalcap
-GEBC/utils/pycocotools
+pycocoevalcap/
+pycocotools/
+GEBC/
+final_output
+output
+etc
