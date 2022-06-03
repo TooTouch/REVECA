@@ -211,6 +211,9 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         use_tsn_features = False,
         use_temporal_pairwise_difference = False,
         use_contrastive_each = False,
+        use_img_encoder_lora = False,
+        use_n_query_0 = False,
+        use_label = False,
         num_frames = 21,
         heads = 8,
         pad_id = None,
@@ -234,7 +237,10 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         # aggregation frame method
         self.aggregation_frames_method = aggregation_frames_method
 
-        # freeze_model_and_make_eval_(self.image_encoder)
+        # use image encoder lora
+        self.use_img_encoder_lora = use_img_encoder_lora
+        if not self.use_img_encoder_lora:
+            freeze_model_and_make_eval_(self.image_encoder)
 
         # loss weights
         self.caption_loss_weight = caption_loss_weight
@@ -244,19 +250,24 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         self.pad_id = pad_id
 
         # attention pooling for image tokens
+        self.use_n_query_0 = use_n_query_0
         self.num_img_queries = num_img_queries
         self.unimodal_decoder_dim = self.unimodal_decoder.config.n_embd
         self.image_dim = self.image_encoder.embed_dim 
         # image_dim = image_dim if not self.use_frame_position else image_dim + 1 #TODO: 만약 frame_pos_embed가 잘되면 삭제
         dim_head = self.image_dim // heads
-        self.img_queries = nn.Parameter(torch.randn(self.num_img_queries + 1, self.unimodal_decoder_dim)) # num image queries for multimodal, but 1 extra CLS for contrastive learning
-        self.img_attn_pool = CrossAttention(
-            dim          = self.unimodal_decoder_dim, 
-            context_dim  = self.image_dim, 
-            dim_head     = dim_head, 
-            heads        = heads, 
-            norm_context = True
-        )
+
+        if not self.use_n_query_0:
+            self.img_queries = nn.Parameter(torch.randn(self.num_img_queries + 1, self.unimodal_decoder_dim)) # num image queries for multimodal, but 1 extra CLS for contrastive learning
+            self.img_attn_pool = CrossAttention(
+                dim          = self.unimodal_decoder_dim, 
+                context_dim  = self.image_dim, 
+                dim_head     = dim_head, 
+                heads        = heads, 
+                norm_context = True
+            )
+        else:
+            self.img_attn_pool = nn.Linear(self.image_dim, self.unimodal_decoder_dim)
 
         self.img_attn_pool_norm = LayerNorm(self.unimodal_decoder_dim)
         self.cls_norm = LayerNorm(self.unimodal_decoder_dim)
@@ -303,6 +314,9 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         # they used embedding weight tied projection out to logits, not common, but works
         self.to_logits[-1].weight = nn.Parameter(self.unimodal_decoder.wte.weight)
 
+        # use label
+        self.use_label = use_label
+
     def forward(self, captions, frames=None, seg_features=None, tsn_features=None, frames_embed=None, labels=None, return_loss=False, **kwargs):
 
         # unimodal decoding
@@ -329,7 +343,7 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
         logits = self.to_logits(output['last_hidden_state'])
 
         if return_loss:
-            acc1, acc5 = accuracy(logits, labels)
+            acc1, acc5 = accuracy(logits, labels, use_label=self.use_label)
             caption_loss, contrastive_loss = self.calc_loss(captions_cls_embed, frames_cls_embed, logits, labels)
             return acc1, acc5, caption_loss, contrastive_loss
 
@@ -354,9 +368,12 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
 
 
     def embed_frame(self, frame, seg_features=None, pos_idx=0):    
-        # self.image_encoder.eval()
-        # with torch.no_grad():
-        image_embed = self.image_encoder.forward_features(frame)
+        if self.use_img_encoder_lora:
+            image_embed = self.image_encoder.forward_features(frame)  
+        else:  
+            self.image_encoder.eval()
+            with torch.no_grad():
+                image_embed = self.image_encoder.forward_features(frame)
 
         # seg features
         if seg_features is not None:
@@ -368,8 +385,11 @@ class VideoBoudnaryCoCa(nn.Module, GenerationMixin):
             image_embed = self.add_frame_position(image_embed, pos_idx)
 
         # attention pool image tokens
-        img_queries = repeat(self.img_queries, 'n d -> b n d', b=image_embed.shape[0])
-        img_queries = self.img_attn_pool(img_queries, image_embed)
+        if not self.use_n_query_0:
+            img_queries = repeat(self.img_queries, 'n d -> b n d', b=image_embed.shape[0])
+            img_queries = self.img_attn_pool(img_queries, image_embed)
+        else:
+            img_queries = self.img_attn_pool(image_embed)
         img_queries = self.img_attn_pool_norm(img_queries)
 
         return img_queries[:, 0], img_queries[:, 1:]
@@ -801,6 +821,9 @@ def create_model(args, tokenizer):
         use_seg_features                 = args.use_seg_features,
         use_tsn_features                 = args.use_tsn_features,
         use_temporal_pairwise_difference = args.use_temporal_pairwise_difference,
+        use_img_encoder_lora             = args.use_img_encoder_lora,
+        use_n_query_0                    = args.use_n_query_0,
+        use_label                        = args.use_label,
         num_frames                       = 2 * args.max_sample_num + 1,
         heads                            = args.num_heads,
         pad_id                           = tokenizer.encode(tokenizer.eos_token)[0],
