@@ -32,7 +32,11 @@ def convert_device(inputs, device):
 
     return inputs
     
-def accuracy(outputs, targets, ignore=-100):
+def accuracy(outputs, targets, ignore=-100, use_label=False):
+    if use_label:
+        # TODO: hard coding
+        targets[:,:6] = -100
+
     _, pred = outputs.topk(5, -1, True, True)
     targets_len = (targets!=ignore).sum(-1)
     ignore_len = (targets==ignore).sum(-1)
