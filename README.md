@@ -48,7 +48,7 @@ Our model uses three video features: instance segmentation mask, TSN features
 
 # Methods
 
-Our video understanding model is called REVECA, based on CoCa. We use three methods: (1) Temporal-based Pairwise Difference (TPD), (2) Frame position embedding, and (3) LoRA. we use timm version == 0.6.2.dev0 and `loralib`. And then, we modify `a vision_transformer.py` for using LoRA. 
+Our video understanding model is called REVECA, based on CoCa. We use three methods: (1) Temporal-based Pairwise Difference (TPD), (2) Frame position embedding, and (3) LoRA. we use timm version == 0.6.2.dev0 and `loralib`. And then, we modify a `vision_transformer.py` for using LoRA. 
 
 
 # Results
