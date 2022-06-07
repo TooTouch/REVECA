@@ -377,10 +377,9 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
         return frames
 
     def get_seg_features(self, boundary_id):
-        seg_features = None
+        seg_features = {}
 
         if self.use_seg_features:
-            seg_features = {}
             saved_seg_features = torch.load(os.path.join(self.datadir, 'seg_features', f'{boundary_id}.pt'))
             seg_features['before'] = saved_seg_features[:self.max_sample_num].to(torch.float).unsqueeze(1)
             seg_features['boundary'] = saved_seg_features[self.max_sample_num].to(torch.float).unsqueeze(0)
@@ -389,7 +388,7 @@ class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
         return seg_features
 
     def get_tsn_features(self, video_id, boundary_idx):
-        tsn_features = None
+        tsn_features = {}
 
         if self.use_tsn_features:
             filename = os.path.join(self.datadir, 'tsn_captioning_feature', f'{video_id}.hdf5')
