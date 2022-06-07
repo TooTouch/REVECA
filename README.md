@@ -7,6 +7,10 @@
 
 We proposed the Rich Encoder-decoder framework for Video Event Captioner (REVECA). Our model achieves 3rd place in GEBC Challenge [ [link](https://codalab.lisn.upsaclay.fr/competitions/4157#results) ].
 
+<p align='center'>
+    <img width='800' src='https://github.com/TooTouch/REVECA/blob/main/assets/figure1.jpeg'>
+</p>
+
 # Environments
 
 1. Build a docker image and make a docker container
@@ -45,10 +49,6 @@ Our model uses three video features: instance segmentation mask, TSN features
 # Methods
 
 Our video understanding model is called REVECA, based on CoCa. We use three methods: (1) Temporal-based Pairwise Difference (TPD), (2) Frame position embedding, and (3) LoRA. we use timm version == 0.6.2.dev0 and `loralib`. And then, we modify `a vision_transformer.py` for using LoRA. 
-
-<p align='center'>
-    <img width='800' src=''>
-</p>
 
 
 # Results
