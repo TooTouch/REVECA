@@ -8,7 +8,7 @@
 We propose the Rich Encoder-decoder framework for Video Event Captioner (REVECA). Our model achieves 3rd place in [GEBC Challenge](https://codalab.lisn.upsaclay.fr/competitions/4157#results).
 
 <p align='center'>
-    <img width='800' src='https://github.com/TooTouch/REVECA/blob/main/assets/figure1.jpeg'>
+    <img width='800' src='https://github.com/TooTouch/REVECA/blob/main/assets/figure1.png'>
 </p>
 
 # Environments
