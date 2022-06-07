@@ -63,7 +63,7 @@ ActBERT-revised | 40.80 | 74.71 | 19.52 | 28.15
 
 # Saved Model
 
-Our final model weights can download [here]().
+Our final model weights can download [here](https://drive.google.com/file/d/1sQZXg5-L6i5l6brCyu5HCsaoRvlVSiuO/view?usp=sharing).
 
 
 # Citation
