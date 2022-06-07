@@ -1,7 +1,7 @@
 # Generic Boundary Event Captioning Challenge at CVPR 2022 LOVEU workshop
 
-*Jaehyuk Heo, YongGi Jeong, Sunwoo Kim, Jaehee Kim, Pilsung Kang*
-*School of Industrial & Management Engineering, Korea University*
+*Jaehyuk Heo, YongGi Jeong, Sunwoo Kim, Jaehee Kim, Pilsung Kang*  
+*School of Industrial & Management Engineering, Korea University*  
 *Seoul, Korea*
 
 
