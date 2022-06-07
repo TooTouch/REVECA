@@ -5,7 +5,7 @@
 *Seoul, Korea*
 
 
-We proposed the Rich Encoder-decoder framework for Video Event Captioner (REVECA). Our model achieve 3rd place in GEBC Challenge [ [link](https://codalab.lisn.upsaclay.fr/competitions/4157#results) ].
+We proposed the Rich Encoder-decoder framework for Video Event Captioner (REVECA). Our model achieves 3rd place in GEBC Challenge [ [link](https://codalab.lisn.upsaclay.fr/competitions/4157#results) ].
 
 # Environments
 
@@ -37,14 +37,14 @@ datasets/
 
 Our model uses three video features: instance segmentation mask, TSN features
 
-1. We use the semantic segmentation mask for training model. The segmentation model is [Mask2Former](https://github.com/facebookresearch/Mask2Former).
+1. We use the semantic segmentation mask for the training model. The segmentation model is [Mask2Former](https://github.com/facebookresearch/Mask2Former).
 
-2. We use TSN features extracted by Temporal Segmentation Networks. TSN features released in GEBC Challenge can download in [here](https://drive.google.com/drive/folders/1kOauKJY4MphWJhjYcXcCcdmP-071Fu6D?usp=sharing).
+2. We use TSN features extracted by Temporal Segmentation Networks. TSN features released in GEBC Challenge can download [here](https://drive.google.com/drive/folders/1kOauKJY4MphWJhjYcXcCcdmP-071Fu6D?usp=sharing).
 
 
 # Methods
 
-Our video understanding model called REVECA based on CoCa. We use three methods: (1) Temporal-based Pairwise Difference (TPD), (2) Frame position embedding and (3) LoRA. we use timm version == 0.6.2.dev0 and `loralib`. And then, we modify `a vision_transformer.py` for using LoRA. 
+Our video understanding model is called REVECA, based on CoCa. We use three methods: (1) Temporal-based Pairwise Difference (TPD), (2) Frame position embedding, and (3) LoRA. we use timm version == 0.6.2.dev0 and `loralib`. And then, we modify `a vision_transformer.py` for using LoRA. 
 
 <p align='center'>
     <img width='800' src=''>
@@ -63,7 +63,7 @@ ActBERT-revised | 40.80 | 74.71 | 19.52 | 28.15
 
 # Saved Model
 
-Our final model weights can download in [here]().
+Our final model weights can download [here]().
 
 
 # Citation
