@@ -20,7 +20,7 @@ python main.py --exp_name 'VideoBoundaryCoCa_final_large-LoRA_img_ft_label' --do
                     --use_temporal_pairwise_difference \
                     --use_replace_01 \
                     --use_label \
-	            --num_workers 0 \
+	                --num_workers 0 \
                     --use_img_encoder_lora \
                     --use_train_val \
                     --gpu_ids '0 1 2 3 4 5' \
