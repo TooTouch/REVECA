@@ -141,6 +141,10 @@ def training(
                 ])
                 wandb.log(metrics)
 
+            model.train()
+        if (step+1) == args.stop_step:
+            break
+
 
 
 def validation(model, dataloader, log_interval, device='cpu'):
