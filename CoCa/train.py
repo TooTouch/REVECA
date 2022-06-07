@@ -117,7 +117,7 @@ def training(
                         ('train_acc5', acc5_m.val),
                         ('train_loss', losses_m.val),
                         ('train_caption_loss', caption_losses_m.val),
-                        ('train_constrastive_loss', contrastive_losses_m.val),
+                        ('train_contrastive_loss', contrastive_losses_m.val),
                         ('lr',optimizer.param_groups[0]['lr'])
                     ])
                     wandb.log(metrics)
