@@ -43,6 +43,8 @@ Our model uses three video features: instance segmentation mask, TSN features
 
 1. We use the semantic segmentation mask for the training model. The segmentation model is [Mask2Former](https://github.com/facebookresearch/Mask2Former).
 
+![](https://github.com/TooTouch/REVECA/blob/main/assets/run_with_seg.gif)
+
 2. We use TSN features extracted by Temporal Segmentation Networks. TSN features released in GEBC Challenge can download [here](https://drive.google.com/drive/folders/1kOauKJY4MphWJhjYcXcCcdmP-071Fu6D?usp=sharing).
 
 
