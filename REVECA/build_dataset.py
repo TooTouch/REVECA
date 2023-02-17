@@ -191,7 +191,7 @@ class CaptionExtraction:
         input_ids = self.tokenizer.encode(caption)
 
         # extract label_ids
-        input_ids, label_ids = self.extract_label_ids(input_ids)
+        label_ids = self.extract_label_ids(input_ids)
 
         # attention_mask
         attention_mask = [1] * len(input_ids)
@@ -227,10 +227,10 @@ class CaptionExtraction:
             label_ids += ([-100] * pad_length)
 
         elif len(input_ids) > self.max_token_length:
-            input_ids = input_ids[:self.max_token_length-1] + eos_id
+            input_ids = input_ids[:self.max_token_length]
             attention_mask = attention_mask[:self.max_token_length] 
 
-            label_ids = input_ids[:self.max_token_length-1] + eos_id
+            label_ids = label_ids[:self.max_token_length-1] + eos_id
 
         return input_ids, label_ids, attention_mask
     
@@ -240,7 +240,7 @@ class CaptionExtraction:
         return input_ids, attention_mask
 
     def extract_label_ids(self, input_ids):
-        return input_ids[:-1], input_ids[1:]
+        return input_ids[1:]
 
 
 class BoundaryCaptioningDataset(Dataset, VideoExtraction, CaptionExtraction):
